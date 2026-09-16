@@ -108,6 +108,12 @@ jobs:
           sudo mount --bind /proc "$R/proc"
 
           sudo chroot "$R" /bin/bash -e << 'EOF'
+          # Landlock LSM (which pacman's package-download sandbox needs to
+          # drop to the restricted 'alpm' user) isn't reliably available
+          # under qemu-user-static emulation on this runner — disable
+          # pacman's sandbox rather than let it fail switching users.
+          sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
+
           pacman-key --init
           pacman-key --populate archlinuxarm
           pacman -Syu --noconfirm --needed \
