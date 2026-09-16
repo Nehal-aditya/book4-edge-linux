@@ -31,14 +31,6 @@ jobs:
           sudo apt-get install -y qemu-user-static binfmt-support parted dosfstools \
             e2fsprogs gdisk rsync zstd git
 
-      - name: Configure git identity for git am
-        run: |
-          # git am needs a committer identity to apply patches; the runner's
-          # global git config has none set by default, which is what was
-          # failing here.
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
       - name: Set up workspace
         run: |
           mkdir -p workspace/rootfs workspace/kernel_build
@@ -52,6 +44,15 @@ jobs:
           # The commit pinned in the README (2685c75587ff) is the tip of this
           # branch as of writing; fetch full history only if it ever moves on.
           git log -1 --oneline
+
+      - name: Configure git identity for git am
+        run: |
+          # git am needs a committer identity to apply patches; the runner's
+          # global git config has none set by default, which is what was
+          # failing here.
+          cd workspace/kernel_build/linux-book4-edge
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Apply board patches from your fork
         run: |
