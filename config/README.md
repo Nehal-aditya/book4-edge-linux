@@ -1,0 +1,16 @@
+# Kernel config
+
+`book4-edge.config` is the full config the port is built with (base
+`zensanp/linux-book4-edge @ 2685c75587ff`, `ARCH=arm64`).
+
+Differences from the config the machine was first brought up with, and why:
+
+| option | why |
+|---|---|
+| `INPUT_UINPUT=m` | `/dev/uinput` for ydotool and on-screen keyboards |
+| `UHID=m`, `HIDRAW=y` | userspace HID (HID-over-GATT) and raw HID access |
+| `BT_RFCOMM=m`, `BT_RFCOMM_TTY=y` | Bluetooth headset microphone (HFP/HSP); bluetoothd logs "RFCOMM server failed" without it |
+| `PKCS8_PRIVATE_KEY_PARSER=m` | EAP-TLS Wi-Fi with PKCS#8 keys; also silences iwd's modules-load error |
+| `ZRAM=m`, `ZSMALLOC=m`, LZ4 + ZSTD backends | compressed swap in RAM; see `userspace/memory` |
+
+Everything else is unchanged from the base tree's config.

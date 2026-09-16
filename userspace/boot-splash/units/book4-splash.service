@@ -1,0 +1,24 @@
+[Unit]
+Description=Boot splash
+DefaultDependencies=no
+After=systemd-tmpfiles-setup-dev.service
+Before=basic.target shutdown.target
+Conflicts=shutdown.target
+# Only on entries with `splash` on the command line; keep one entry without it as a
+# provably splash-free recovery boot.
+ConditionKernelCommandLine=splash
+ConditionVirtualization=!container
+
+[Service]
+# Type=simple is load-bearing: systemd considers the unit started at exec, so
+# sysinit.target is never delayed. notify/oneshot/forking would hang the boot.
+Type=simple
+ExecStart=/usr/local/bin/book4-splash
+Restart=no
+# Whatever way we die, the panel must not stay dark.
+ExecStopPost=-/bin/sh -c 'for b in /sys/class/backlight/*/brightness; do [ "$(cat $b)" = 0 ] && cat "$(ls /var/lib/systemd/backlight/* | head -1)" > $b; done; true'
+TimeoutStopSec=5
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=sysinit.target

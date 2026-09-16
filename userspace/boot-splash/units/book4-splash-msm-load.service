@@ -1,0 +1,13 @@
+[Unit]
+Description=Load the msm display driver (boots without splash)
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=sysinit.target
+ConditionKernelCommandLine=!splash
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/modprobe msm
+
+[Install]
+WantedBy=sysinit.target

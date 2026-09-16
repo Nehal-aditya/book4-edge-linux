@@ -1,0 +1,66 @@
+From 4d481ac23d3f2af6758ea067edf888766fbbcb37 Mon Sep 17 00:00:00 2001
+From: ciscobugger <xizko55@gmail.com>
+Date: Wed, 16 Sep 2026 05:18:25 +0200
+Subject: [PATCH 2/3] media: i2c: ov02c10: invert HFLIP for the rotated Book4
+ Edge front camera
+
+Board-specific hack, not for upstream as-is.
+
+On the Samsung Galaxy Book4 Edge the OV02C10 module is mounted rotated
+by 180 degrees, so the device tree declares rotation = <180>. libcamera
+then drives HFLIP and VFLIP together (it cannot express a vertical-only
+transform; see the "Handle horizontal and vertical flips independently"
+TODO in camera_sensor_legacy.cpp). Both flips give the true, un-mirrored
+scene, but a laptop front camera is expected to show a mirrored
+self-view. Inverting HFLIP keeps the vertical correction and cancels the
+horizontal one. The flip controls carry no MODIFY_LAYOUT flag on this
+sensor, so the Bayer order is unaffected.
+
+The right fix is in libcamera (independent flips); this keeps the
+picture correct until then.
+
+Signed-off-by: ciscobugger <xizko55@gmail.com>
+---
+ drivers/media/i2c/ov02c10.c | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/media/i2c/ov02c10.c b/drivers/media/i2c/ov02c10.c
+index e8011c8e0..9dbc67f36 100644
+--- a/drivers/media/i2c/ov02c10.c
++++ b/drivers/media/i2c/ov02c10.c
+@@ -459,12 +459,29 @@ static int ov02c10_set_ctrl(struct v4l2_ctrl *ctrl)
+ 		ret = ov02c10_test_pattern(ov02c10, ctrl->val);
+ 		break;
+ 
+-	case V4L2_CID_HFLIP:
++	case V4L2_CID_HFLIP: {
++		/*
++		 * Samsung Galaxy Book4 Edge: the module is mounted rotated by
++		 * 180 degrees, so the DT declares rotation = <180> and
++		 * libcamera consequently drives HFLIP and VFLIP together (it
++		 * cannot express a vertical-only transform - see the "Handle
++		 * horizontal and vertical flips independently" TODO in
++		 * camera_sensor_legacy.cpp). Applying both yields the true,
++		 * un-mirrored scene, but a laptop front camera wants a mirrored
++		 * self-view. Inverting HFLIP here leaves the vertical flip in
++		 * place while cancelling the horizontal one, which is exactly a
++		 * mirrored upright image. The flip controls carry no
++		 * MODIFY_LAYOUT flag on this sensor, so the Bayer order is
++		 * unaffected.
++		 */
++		unsigned int hflip = !ctrl->val;
++
+ 		cci_write(ov02c10->regmap, OV02C10_ISP_X_WIN_CONTROL,
+-			  ctrl->val ? 2 : 1, &ret);
++			  hflip ? 2 : 1, &ret);
+ 		cci_update_bits(ov02c10->regmap, OV02C10_ROTATE_CONTROL,
+-				BIT(3), ctrl->val ? 0 : BIT(3), &ret);
++				BIT(3), hflip ? 0 : BIT(3), &ret);
+ 		break;
++	}
+ 
+ 	case V4L2_CID_VFLIP:
+ 		cci_write(ov02c10->regmap, OV02C10_ISP_Y_WIN_CONTROL,
+-- 
+2.55.0
+

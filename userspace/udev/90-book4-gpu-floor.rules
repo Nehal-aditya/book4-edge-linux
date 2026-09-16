@@ -1,0 +1,3 @@
+# The Adreno devfreq idles at 280 MHz and never ramps for desktop animations, and this
+# kernel has no "performance" governor. A 1107 MHz floor makes the desktop smooth.
+SUBSYSTEM=="devfreq", KERNEL=="3d00000.gpu", ATTR{min_freq}="1107000000"

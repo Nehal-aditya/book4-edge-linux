@@ -1,0 +1,7 @@
+# The internal I2C-HID keyboard advertises BTN_0/BTN_1 and an absolute volume axis,
+# which input_id reads as a graphics-tablet pad; libinput then never binds it as a
+# keyboard. Drop the tablet verdict only. Must sort after 60-input-id.rules.
+ACTION=="remove", GOTO="book4_kbd_end"
+SUBSYSTEM!="input", GOTO="book4_kbd_end"
+ATTRS{name}=="hid-over-i2c 0CF2:9050 Keyboard", ENV{ID_INPUT_TABLET}="", ENV{ID_INPUT_TABLET_PAD}=""
+LABEL="book4_kbd_end"

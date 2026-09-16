@@ -1,0 +1,25 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * Bring up the three I2C controllers the firmware uses for the Type-C path and our device tree
+ * leaves disabled. The ACPI _CRS of the EMEC device (SAM0604) puts a Type-C/charger-side
+ * controller at 0x33 on each of the first two, and retimers at 0x09/0x0B on the third, at the
+ * bus speeds set here. The nodes already carry pinctrl-0/pinctrl-names, so status is all that
+ * is missing.
+ */
+
+&{/soc@0/geniqup@ac0000/i2c@a84000} {
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+&{/soc@0/geniqup@ac0000/i2c@a9c000} {
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+&{/soc@0/geniqup@8c0000/i2c@890000} {
+	clock-frequency = <100000>;
+	status = "okay";
+};

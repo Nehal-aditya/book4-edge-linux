@@ -1,0 +1,35 @@
+# Internal-mic low-pass, DISABLED: the DTS clocks the DMICs at 2.4 MHz, which removes
+# the ~17 kHz idle tone this filtered out. Kept for a DTB that still uses 4.8 MHz: four
+# biquads at 10 kHz give ~37 dB at 17 kHz and expose a separate, filtered source.
+context.modules = [
+  { name = libpipewire-module-filter-chain
+    args = {
+      node.description = "Internal microphones (filtered)"
+      media.name       = "Internal microphones (filtered)"
+      filter.graph = {
+        nodes = [
+          { type = builtin label = bq_lowpass name = lp1 control = { "Freq" = 10000 "Q" = 0.707 } }
+          { type = builtin label = bq_lowpass name = lp2 control = { "Freq" = 10000 "Q" = 0.707 } }
+          { type = builtin label = bq_lowpass name = lp3 control = { "Freq" = 10000 "Q" = 0.707 } }
+          { type = builtin label = bq_lowpass name = lp4 control = { "Freq" = 10000 "Q" = 0.707 } }
+        ]
+        links = [
+          { output = "lp1:Out" input = "lp2:In" }
+          { output = "lp2:Out" input = "lp3:In" }
+          { output = "lp3:Out" input = "lp4:In" }
+        ]
+      }
+      capture.props = {
+        node.name   = "capture.book4_mic_lp"
+        node.target = "alsa_input.platform-sound.HiFi__Mic__source"
+        node.passive = true
+        audio.position = [ FL ]
+      }
+      playback.props = {
+        node.name    = "book4_mic_filtered"
+        media.class  = Audio/Source
+        audio.position = [ MONO ]
+      }
+    }
+  }
+]

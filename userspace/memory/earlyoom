@@ -1,0 +1,7 @@
+# earlyoom: last-ditch guard against thrash-freezes. Kills one process, only when RAM
+# and zram swap are both nearly gone (-m 5: below 5% free RAM, -s 10: below 10% free swap).
+# --prefer: things that die gracefully (browser content processes, JVM/Gradle daemons).
+# --avoid:  browser parents, the desktop session, audio, the charging daemon.
+# systemd-oomd is not used: with every app in one session scope it kills the whole desktop.
+# Word-split by systemd: no spaces or quotes inside patterns.
+EARLYOOM_ARGS="-m 5 -s 10 -r 0 -n --prefer (^|/)(Isolated.Web.Co|Web.Content|java|kotlin.*|gradle.*)$ --avoid (^|/)(zen|zen-bin|firefox|Hyprland|quickshell|sddm|Xwayland|pipewire|wireplumber|book4-pd-charge|systemd.*|dbus.*)$"

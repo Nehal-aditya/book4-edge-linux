@@ -1,0 +1,22 @@
+[Unit]
+Description=Hand the display from the boot splash to the display manager
+After=book4-splash.service systemd-user-sessions.service
+Before=sddm.service
+ConditionKernelCommandLine=splash
+
+[Service]
+# If the splash died between backlight-off and its first frame, restore the brightness.
+ExecStartPre=-/bin/sh -c 'for b in /sys/class/backlight/*/brightness; do [ "$(cat $b)" = 0 ] && cat "$(ls /var/lib/systemd/backlight/* | head -1)" > $b; done; true'
+# If the splash never loaded the display driver, load it now (no-op when loaded).
+ExecStartPre=-/sbin/modprobe msm
+# SIGUSR1: the daemon drops DRM master and keeps its frame on screen until the
+# compositor's first commit; it exits by itself once a wayland socket exists.
+Type=oneshot
+ExecStart=-/usr/bin/systemctl kill --signal=SIGUSR1 book4-splash.service
+# systemctl kill returns once the signal is queued, not acted on.
+ExecStartPost=-/usr/bin/sleep 0.3
+RemainAfterExit=yes
+TimeoutSec=20
+
+[Install]
+WantedBy=graphical.target

@@ -1,0 +1,7 @@
+# Force libcamera's software ISP onto the CPU debayer: on this platform the GPU/EGL
+# path never delivers frame statistics to the IPA, so auto-exposure never runs and
+# anything darker than daylight comes out black.
+version: 1
+configuration:
+  software_isp:
+    mode: cpu

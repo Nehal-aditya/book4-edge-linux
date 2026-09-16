@@ -1,0 +1,152 @@
+#!/bin/bash
+# Book4 Edge USB-C charging daemon: what Windows' EmuEc.sys does and Linux lacks.
+#
+#  1. Cable attached at the PDIC but no AC at the EC: re-issue "Consumer_switch_on"
+#     to the S2MM006 (reg 0x4E = 0x12). The register is an action, not a state: it
+#     reads 0x12 while wedged, and re-writing it closes the connector->charger path.
+#     Readback reg 0x1C: b0 Provider, b1 Consumer, b2 Discharging (0x0A = closed).
+#
+#  2. Upgrade the PD contract. On attach the PDIC requests PDO1 (5 V), a trickle for
+#     a 17 V pack. The chip stages a Request at reg 0x0080; bit 6 of reg 0x50 sends it.
+#     The staged buffer is not always a valid Request and a bad send glitches VBUS
+#     (it has hard-reset the machine at low battery), so a transmit requires:
+#       - the staged header decodes as a Request (type 2) with exactly one object,
+#       - its object position is higher than the contract in force,
+#       - at most MAX_TX_PER_ATTACH attempts per attach, TX_COOLDOWN_S apart.
+#
+#  3. Program the ISL9241 charger (0x09) from the smart battery's own request
+#     (0x0B, regs 0x15/0x14): the standard SBS host algorithm. Without it the
+#     charger sits at a ~320 mA trickle.
+#
+# MAX_CURRENT_MA stays at or below what the factory firmware was observed using.
+# A zero current request from the battery means "terminate" and is passed through.
+# Charging stops above TEMP_LIMIT_DK. Nothing is persistent: every register resets
+# on unplug or reboot. Disable with: systemctl disable --now book4-pd-charge
+
+set -u
+
+MAX_CURRENT_MA=1500      # factory firmware observed at ~1432 mA; do not exceed it
+TEMP_LIMIT_DK=3181       # 0.1 K units -> 45.0 C
+VMIN_MV=10000
+VMAX_MV=18000
+POLL=2
+MAX_TX_PER_ATTACH=2      # hard cap on PD transmissions per cable attach
+TX_COOLDOWN_S=30         # never two transmissions closer than this, any port
+
+log(){ echo "book4-pd-charge: $*"; }
+
+# Find the controllers by SoC address, never by bus number (numbering follows
+# probe order). PDIC port 0 sits on i2c@a84000, port 1 on i2c@a9c000, the
+# ISL9241 charger and the SBS battery on i2c@890000. All three must be
+# status = "okay" in the device tree (they are in the port's DTS).
+bus_of(){
+  local d
+  for d in /sys/bus/i2c/devices/i2c-*; do
+    case "$(readlink -f "$d")" in */$1.i2c/i2c-*) echo "${d##*/i2c-}"; return 0;; esac
+  done
+  return 1
+}
+# Old DTB without the buses: try the overlay module from i2c-wake/ first.
+bus_of a84000 >/dev/null || { modprobe i2c-wake 2>/dev/null && sleep 1; } || true
+PD0=$(bus_of a84000) || { log "i2c@a84000 (PDIC port 0) not present; enable it in the device tree"; exit 1; }
+PD1=$(bus_of a9c000) || { log "i2c@a9c000 (PDIC port 1) not present; enable it in the device tree"; exit 1; }
+CHG=$(bus_of 890000) || { log "i2c@890000 (charger/battery) not present; enable it in the device tree"; exit 1; }
+
+rd(){ i2ctransfer -y "$1" w2@0x33 0x00 "$2" r1 2>/dev/null; }
+rd8(){ i2ctransfer -y "$1" w2@0x33 "$2" "$3" r8 2>/dev/null; }   # bus hi lo -> 8 bytes
+ac(){ head -1 /sys/class/power_supply/book4-ec-ac/online 2>/dev/null || echo 0; }
+hex(){ printf "%d" "$1" 2>/dev/null || echo 0; }
+now_s(){ date +%s; }
+
+# Decode "0xAA 0xBB ..." (8 bytes) into: header, type, nobj, rdo object position.
+# Sets: H_TYPE H_NOBJ RDO_POS (all decimal), or returns 1 on a short/empty read.
+decode_msg(){
+  local s="$1"; set -- $s
+  [ $# -ge 8 ] || return 1
+  local lo=$(hex "$1") hi=$(hex "$2") b7=$(hex "$8")
+  local hdr=$(( (hi << 8) | lo ))
+  H_TYPE=$(( hdr & 0xF ))
+  H_NOBJ=$(( (hdr >> 12) & 0x7 ))
+  RDO_POS=$(( b7 >> 4 ))
+  return 0
+}
+
+declare -A tx_count      # bus -> transmissions this attach
+last_tx=0
+last_v=-1; last_c=-1
+
+while true; do
+  # --- 1. close the consumer VBUS switch if the cable is attached but AC is absent
+  if [ "$(ac)" != "1" ]; then
+    for bus in $PD0 $PD1; do
+      [ "$(rd "$bus" 0x0e)" = "0x03" ] || continue
+      [ "$(rd "$bus" 0x1c)" = "0x0a" ] && continue
+      for i in 1 2 3 4 5; do
+        i2ctransfer -y "$bus" w3@0x33 0x00 0x4e 0x12 2>/dev/null
+        sleep 0.02
+        [ "$(rd "$bus" 0x1c)" = "0x0a" ] && break
+      done
+      log "i2c-$bus: consumer switch re-armed (0x1C=$(rd "$bus" 0x1c), ac=$(ac))"
+      last_v=-1; last_c=-1
+      sleep 1
+    done
+  fi
+
+  # --- 2. upgrade the PD contract, guarded (see header comment)
+  for bus in $PD0 $PD1; do
+    if [ "$(rd "$bus" 0x0e)" != "0x03" ]; then
+      tx_count[$bus]=0                       # detached: allow a fresh attempt next attach
+      continue
+    fi
+    [ "$(ac)" = "1" ] || continue
+    [ "${tx_count[$bus]:-0}" -ge "$MAX_TX_PER_ATTACH" ] && continue
+    [ $(( $(now_s) - last_tx )) -ge "$TX_COOLDOWN_S" ] || continue
+
+    staged=$(rd8 "$bus" 0x00 0x80); sent=$(rd8 "$bus" 0x06 0xa0)
+    decode_msg "$staged" || continue
+    s_type=$H_TYPE; s_nobj=$H_NOBJ; s_pos=$RDO_POS
+    decode_msg "$sent"   || continue
+    c_pos=$RDO_POS
+
+    # only a genuine single-object Request, and only if it is an actual upgrade
+    [ "$s_type" -eq 2 ] && [ "$s_nobj" -eq 1 ] || continue
+    [ "$s_pos" -gt "$c_pos" ] && [ "$s_pos" -le 7 ] || continue
+
+    ctrl=$(rd "$bus" 0x50); [ -z "$ctrl" ] && continue
+    cv=$(hex "$ctrl"); [ $(( cv & 0x40 )) -ne 0 ] && continue    # transmitter busy
+
+    i2ctransfer -y "$bus" w3@0x33 0x00 0x50 "$(printf '0x%02x' $(( cv | 0x40 )))" 2>/dev/null
+    tx_count[$bus]=$(( ${tx_count[$bus]:-0} + 1 ))
+    last_tx=$(now_s)
+    sleep 2
+    decode_msg "$(rd8 "$bus" 0x06 0xa0)" && n_pos=$RDO_POS || n_pos=$c_pos
+    log "i2c-$bus: PD upgrade sent (pos $c_pos -> requested $s_pos, now $n_pos; attempt ${tx_count[$bus]}/$MAX_TX_PER_ATTACH)"
+    [ "$n_pos" -gt "$c_pos" ] || log "i2c-$bus: contract did not move; will not retry beyond the cap"
+  done
+
+  # --- 3. keep the ISL9241 programmed from the battery's own request
+  if [ "$(ac)" = "1" ]; then
+    bv=$(i2cget -y "$CHG" 0x0b 0x15 w 2>/dev/null || echo 0x0000)
+    bc=$(i2cget -y "$CHG" 0x0b 0x14 w 2>/dev/null || echo 0x0000)
+    bt=$(i2cget -y "$CHG" 0x0b 0x08 w 2>/dev/null || echo 0x0000)
+    v=$(hex "$bv"); c=$(hex "$bc"); t=$(hex "$bt")
+
+    if [ "$t" -gt "$TEMP_LIMIT_DK" ]; then
+      if [ "$last_c" != "0" ]; then
+        i2cset -y "$CHG" 0x09 0x14 0x0000 w 2>/dev/null
+        log "pack at $(( (t - 2732) / 10 )) C over limit - charging halted"
+        last_c=0; last_v=-1
+      fi
+    elif [ "$v" -ge "$VMIN_MV" ] && [ "$v" -le "$VMAX_MV" ]; then
+      [ "$c" -gt "$MAX_CURRENT_MA" ] && c=$MAX_CURRENT_MA
+      if [ "$v" != "$last_v" ] || [ "$c" != "$last_c" ]; then
+        i2cset -y "$CHG" 0x09 0x15 "$(printf '0x%04x' "$v")" w 2>/dev/null
+        i2cset -y "$CHG" 0x09 0x14 "$(printf '0x%04x' "$c")" w 2>/dev/null
+        log "charger programmed: ${v} mV / ${c} mA"
+        last_v=$v; last_c=$c
+      fi
+    fi
+  fi
+
+  sleep "$POLL"
+done

@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: CC0-1.0
+#
+# libcamera soft-ISP tuning: OmniVision OV02C10, Samsung Galaxy Book4 Edge (NP750XQA).
+#
+# BlackLevel: the sensor's programmed BLC pedestal (0x4002/0x4003 = 0x40 at 10 bits).
+# Ccm: grey-world AWB leaves a bluish cast; the blue row sums to ~0.86 to warm it,
+#      red and green sum to 1.0 so exposure is unchanged. Off-diagonals kept moderate
+#      because large ones amplify noise on a 1/2.9" sensor in dim light.
+# gamma/contrast/saturation need the companion Adjust patch; upstream ignores them.
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  - Ccm:
+      ccms:
+        - ct: 2860
+          ccm: [  1.237, -0.279,  0.042,
+                 -0.107,  1.132, -0.055,
+                 -0.043, -0.541,  1.495 ]
+        - ct: 4500
+          ccm: [  1.237, -0.279,  0.042,
+                 -0.107,  1.132, -0.055,
+                 -0.044, -0.553,  1.527 ]
+        - ct: 6500
+          ccm: [  1.237, -0.279,  0.042,
+                 -0.107,  1.132, -0.055,
+                 -0.046, -0.571,  1.577 ]
+  - Adjust:
+      gamma: 2.4
+      contrast: 1.08
+      saturation: 1.00
+  - Agc:
+...

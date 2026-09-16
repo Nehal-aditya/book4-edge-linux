@@ -1,0 +1,12 @@
+[Unit]
+Description=Book4 Edge USB-C charging (close PDIC consumer switch, program ISL9241)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/book4-pd-charge
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

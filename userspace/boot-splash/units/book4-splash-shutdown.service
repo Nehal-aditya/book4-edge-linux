@@ -1,0 +1,16 @@
+[Unit]
+Description=Shutdown splash
+DefaultDependencies=no
+After=getty@tty1.service display-manager.service
+Before=systemd-poweroff.service systemd-reboot.service systemd-halt.service systemd-kexec.service
+ConditionVirtualization=!container
+
+[Service]
+# Same daemon, held until the kernel goes. No driver load, no backlight games.
+Type=simple
+ExecStart=/usr/local/bin/book4-splash --shutdown
+KillSignal=SIGTERM
+TimeoutStopSec=2
+
+[Install]
+WantedBy=poweroff.target reboot.target halt.target kexec.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=zram swap (compressed, in RAM)
+DefaultDependencies=no
+After=systemd-modules-load.service local-fs-pre.target
+Before=swap.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/zram-swap start
+ExecStop=/usr/local/bin/zram-swap stop
+
+[Install]
+WantedBy=swap.target
