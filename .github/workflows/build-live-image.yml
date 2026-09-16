@@ -1,0 +1,300 @@
+# This is an AI generated github workflow
+name: Build Custom Arch Linux ARM Live Image (Book4 Edge, no squashfs)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout user config repo (your fork of ciscobugger/book4-edge-linux)
+        uses: actions/checkout@v4
+        with:
+          path: user_config_repo
+
+      - name: Free up runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune -a -f || true
+
+      - name: Install build dependencies on host
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support parted dosfstools \
+            e2fsprogs gdisk rsync zstd git
+
+      - name: Set up workspace
+        run: |
+          mkdir -p workspace/rootfs workspace/kernel_build
+
+      - name: Clone zensanp kernel (correct URL + branch, matches README)
+        run: |
+          git clone --depth 1 --branch x1e80100-book4e-7.2-14-tmp \
+            https://github.com/zensanp/linux-book4-edge.git \
+            workspace/kernel_build/linux-book4-edge
+          cd workspace/kernel_build/linux-book4-edge
+          # The commit pinned in the README (2685c75587ff) is the tip of this
+          # branch as of writing; fetch full history only if it ever moves on.
+          git log -1 --oneline
+
+      - name: Apply board patches from your fork
+        run: |
+          cd workspace/kernel_build/linux-book4-edge
+          git am ../../../user_config_repo/patches/0001-*.patch \
+                 ../../../user_config_repo/patches/0002-*.patch \
+                 ../../../user_config_repo/patches/0003-*.patch
+
+      - name: Cross-compile kernel, modules, DTBs
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu bc flex bison libssl-dev libelf-dev
+          cd workspace/kernel_build/linux-book4-edge
+          cp ../../../user_config_repo/config/book4-edge.config .config
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image vmlinuz.efi modules dtbs
+          # Sanity check: fail fast if the DTB we need doesn't exist, rather
+          # than discovering it three steps later.
+          test -f arch/arm64/boot/dts/qcom/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb
+
+      - name: Bootstrap base Arch Linux ARM rootfs
+        run: |
+          cd workspace
+          wget -O ArchLinuxARM-aarch64-latest.tar.gz \
+            http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
+          sudo tar -xpf ArchLinuxARM-aarch64-latest.tar.gz -C rootfs/
+          rm ArchLinuxARM-aarch64-latest.tar.gz
+
+      - name: Install kernel modules into rootfs
+        run: |
+          cd workspace/kernel_build/linux-book4-edge
+          sudo make ARCH=arm64 INSTALL_MOD_PATH="${{ github.workspace }}/workspace/rootfs" modules_install
+
+      - name: Copy in userspace tree, driver source and firmware from your fork
+        run: |
+          R=workspace/rootfs
+          sudo mkdir -p "$R/opt/book4-edge-linux"
+          sudo cp -a user_config_repo/userspace "$R/opt/book4-edge-linux/"
+          sudo cp -a user_config_repo/driver    "$R/opt/book4-edge-linux/"
+          sudo cp -a user_config_repo/firmware  "$R/opt/book4-edge-linux/"
+          sudo cp -a user_config_repo/scripts   "$R/opt/book4-edge-linux/"
+          sudo cp    user_config_repo/install.sh "$R/opt/book4-edge-linux/"
+          sudo chmod +x "$R/opt/book4-edge-linux/install.sh"
+          # install.sh is run for real inside the chroot below, in the correct
+          # places (/usr/lib/firmware, /usr/share/alsa/ucm2, /etc/udev, etc.) —
+          # it is not just dropped in /usr/local/bin and left unrun.
+
+      - name: Configure and populate rootfs via chroot
+        run: |
+          R=workspace/rootfs
+          sudo cp /usr/bin/qemu-aarch64-static "$R/usr/bin/"
+          sudo mount --bind /dev "$R/dev"
+          sudo mount --bind /sys "$R/sys"
+          sudo mount --bind /proc "$R/proc"
+
+          sudo chroot "$R" /bin/bash -e << 'EOF'
+          pacman-key --init
+          pacman-key --populate archlinuxarm
+          pacman -Syu --noconfirm --needed \
+            linux-firmware linux-firmware-qcom linux-firmware-atheros \
+            mesa vulkan-freedreno pipewire pipewire-pulse wireplumber alsa-ucm-conf swh-plugins \
+            i2c-tools earlyoom iwd networkmanager bluez bluez-utils dtc \
+            plasma-desktop plasma-workspace plasma-nm plasma-pa power-profiles-daemon \
+            breeze sddm sddm-kcm konsole dolphin kde-cli-tools kscreen ark \
+            sudo dkms base-devel git rsync python zstd libdrm \
+            calamares kpmcore gptfdisk parted dosfstools e2fsprogs
+
+          # --- Live-session user first: install.sh writes per-user PipeWire/
+          #     WirePlumber/libcamera config to $SUDO_USER's home, so that
+          #     account has to exist before install.sh runs, not after. ---
+          useradd -m -G wheel,video,audio,storage,power -s /bin/bash liveuser
+          passwd -d liveuser
+          echo "liveuser ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-liveuser
+
+          # --- Run the fork's own install.sh for real. DESTDIR=/ makes it
+          #     install to real absolute paths (D$PATH with D="/" collapses
+          #     to the same path) while taking the script's own early-exit
+          #     branch that skips `systemctl enable --now`, `udevadm control
+          #     --reload` and `sysctl --system` — none of which can succeed
+          #     in a chroot with no systemd manager or udev actually running,
+          #     and install.sh's `set -e` would otherwise abort the whole
+          #     step on the first one. ---
+          cd /opt/book4-edge-linux
+          SUDO_USER=liveuser DESTDIR=/ ./install.sh
+
+          # --- Wi-Fi board file (repo: scripts/make-board-2.sh) ---
+          ./scripts/make-board-2.sh
+          install -D -m644 board-2.bin /usr/lib/firmware/ath12k/WCN7850/hw2.0/board-2.bin
+
+          # --- EC driver: build+install via dkms. Version is 0.1 per the
+          #     driver's own dkms.conf (PACKAGE_VERSION), not a guess. ---
+          cd /opt/book4-edge-linux/driver/samsung-galaxybook-ec
+          dkms add .
+          dkms install samsung-galaxybook-ec/0.1 -k "$(ls /lib/modules)"
+
+          # --- Boot splash: install its files and units directly rather than
+          #     running its install.sh verbatim. That script's own
+          #     `systemctl daemon-reload` needs a live systemd manager and
+          #     fails under `set -eu` in a plain chroot, aborting everything
+          #     after it (including the actual `systemctl enable` for the
+          #     splash units). daemon-reload/`systemd-analyze verify` aren't
+          #     needed at image-build time anyway — the real boot reads the
+          #     unit files fresh. ---
+          cd /opt/book4-edge-linux/userspace/boot-splash
+          make
+          install -Dm755 book4-splash /usr/local/bin/book4-splash
+          install -Dm644 theme.conf /etc/book4-splash/theme.conf
+          for u in book4-splash book4-splash-release book4-splash-shutdown book4-splash-msm-load; do
+            install -Dm644 units/$u.service /etc/systemd/system/$u.service
+          done
+          install -Dm644 units/book4-splash-msm-gate.conf /etc/modprobe.d/book4-splash-msm-gate.conf
+          install -Dm644 units/sddm-release.conf /etc/systemd/system/sddm.service.d/book4-splash-release.conf
+          install -Dm644 units/sddm-restart-tolerance.conf /etc/systemd/system/sddm.service.d/restart-tolerance.conf
+          systemctl mask plymouth-start.service plymouth-read-write.service plymouth-quit.service \
+            plymouth-quit-wait.service plymouth-poweroff.service plymouth-reboot.service \
+            plymouth-halt.service plymouth-kexec.service >/dev/null 2>&1 || true
+
+          # --- libcamera with the OV02C10 helper: build as an unprivileged
+          #     throwaway user (makepkg refuses to run as root), with
+          #     temporary passwordless sudo so --syncdeps can pull build deps. ---
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/91-builder
+          chown -R builder:builder /opt/book4-edge-linux/userspace/camera/libcamera
+          su builder -c "cd /opt/book4-edge-linux/userspace/camera/libcamera && \
+            makepkg --noconfirm --syncdeps --install"
+          rm -f /etc/sudoers.d/91-builder
+          userdel -r builder
+
+          # Every service enabled below is a plain `enable` (symlink creation
+          # only) — none need a running systemd manager, unlike `--now`.
+          systemctl enable sddm NetworkManager systemd-timesyncd \
+            zram-swap.service book4-pd-charge.service earlyoom.service \
+            book4-splash.service book4-splash-release.service \
+            book4-splash-shutdown.service book4-splash-msm-load.service
+          EOF
+
+          sudo umount "$R/dev" "$R/sys" "$R/proc"
+
+      - name: Build initramfs (repo's own mkinitcpio config, no live/overlay hook)
+        run: |
+          R=workspace/rootfs
+          sudo cp user_config_repo/boot/mkinitcpio-book4.conf "$R/etc/mkinitcpio.conf.d/book4.conf"
+          sudo mount --bind /dev "$R/dev"; sudo mount --bind /sys "$R/sys"; sudo mount --bind /proc "$R/proc"
+          sudo chroot "$R" mkinitcpio -k "$(ls "$R/lib/modules")" -g /boot/initramfs-book4.img
+          sudo umount "$R/dev" "$R/sys" "$R/proc"
+
+      - name: SDDM autologin for the live session
+        run: |
+          R=workspace/rootfs
+          sudo mkdir -p "$R/etc/sddm.conf.d"
+          printf '[Autologin]\nUser=liveuser\nSession=plasma.desktop\nRelogin=false\n' | \
+            sudo tee "$R/etc/sddm.conf.d/autologin.conf" >/dev/null
+
+          sudo mkdir -p "$R/home/liveuser/.config/autostart"
+          printf '[Desktop Entry]\nType=Application\nName=Install Book4 Edge Linux\nExec=sudo calamares\nIcon=calamares\nTerminal=false\n' | \
+            sudo tee "$R/home/liveuser/.config/autostart/calamares.desktop" >/dev/null
+          sudo chown -R 1000:1000 "$R/home/liveuser"
+
+      - name: Configure Calamares for a file-copy install (no squashfs source)
+        run: |
+          R=workspace/rootfs
+          C="$R/etc/calamares"
+          # unpackfs: copy the running live filesystem itself onto the target,
+          # instead of unsquashing an image — this is the documented alternative
+          # source mode and is what avoids squashfs entirely, on both ends.
+          sudo tee "$C/modules/unpackfs.conf" > /dev/null << 'EOF'
+          unpack:
+            - source: "/"
+              sourcefs: "file"
+              destination: ""
+              exclude:
+                - "/proc/*"
+                - "/sys/*"
+                - "/dev/*"
+                - "/run/*"
+                - "/tmp/*"
+                - "/mnt/*"
+                - "/media/*"
+                - "/home/liveuser/*"
+                - "/etc/sudoers.d/90-liveuser"
+                - "/etc/sddm.conf.d/autologin.conf"
+                - "/var/cache/pacman/pkg/*"
+          EOF
+
+          # Drop the stock bootloader module from the sequence; the board's
+          # own boot quirk (efi=noruntime, systemd-boot must land at
+          # EFI/Microsoft/Boot/bootmgfw.efi on the internal disk) is handled
+          # by our own shellprocess script below instead.
+          sudo python3 - "$C/settings.conf" << 'PYEOF'
+          import sys, re
+          p = sys.argv[1]
+          s = open(p).read()
+          s = re.sub(r'-\s*bootloader\n', '- shellprocess@book4-boot\n', s)
+          open(p, "w").write(s)
+          PYEOF
+
+          sudo tee "$C/modules/shellprocess@book4-boot.conf" > /dev/null << 'EOF'
+          dontChroot: false
+          timeout: 120
+          script:
+            - "bootctl install --no-variables"
+            - "mkdir -p /boot/EFI/Microsoft/Boot"
+            - "cp /usr/lib/systemd/boot/efi/systemd-bootaa64.efi /boot/EFI/Microsoft/Boot/bootmgfw.efi"
+            - "mkdir -p /boot/dtbs"
+            - "cp /usr/lib/modules/*/dtb/qcom/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb /boot/dtbs/"
+            - "sed -i 's/$/ efi=noruntime clk_ignore_unused pd_ignore_unused/' /boot/loader/entries/*.conf"
+          EOF
+
+      - name: Assemble raw GPT image (ESP + ext4 root, no ISO9660/squashfs)
+        run: |
+          IMG=book4-edge-live.img
+          truncate -s 12G "$IMG"
+          sudo parted -s "$IMG" mklabel gpt
+          sudo parted -s "$IMG" mkpart ESP fat32 1MiB 513MiB
+          sudo parted -s "$IMG" set 1 esp on
+          sudo parted -s "$IMG" mkpart root ext4 513MiB 100%
+
+          LOOP=$(sudo losetup --show -fP "$IMG")
+          sudo mkfs.vfat -F32 -n BOOK4ESP "${LOOP}p1"
+          sudo mkfs.ext4 -L BOOK4ROOT "${LOOP}p2"
+
+          mkdir -p mnt/esp mnt/root
+          sudo mount "${LOOP}p1" mnt/esp
+          sudo mount "${LOOP}p2" mnt/root
+
+          sudo rsync -aHAX --numeric-ids workspace/rootfs/ mnt/root/
+
+          # ESP layout: systemd-boot at the removable-media fallback path
+          # (works on any UEFI firmware, unlike the internal-disk quirk above)
+          sudo mkdir -p mnt/esp/EFI/BOOT mnt/esp/dtbs mnt/esp/loader/entries
+          sudo cp workspace/kernel_build/linux-book4-edge/arch/arm64/boot/vmlinuz.efi mnt/esp/vmlinuz-book4.efi
+          sudo cp workspace/rootfs/boot/initramfs-book4.img mnt/esp/initramfs-book4.img
+          sudo cp workspace/kernel_build/linux-book4-edge/arch/arm64/boot/dts/qcom/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb \
+            mnt/esp/dtbs/
+          # systemd-boot itself, at the standard removable-media path
+          sudo cp workspace/rootfs/usr/lib/systemd/boot/efi/systemd-bootaa64.efi mnt/esp/EFI/BOOT/BOOTAA64.EFI
+
+          ROOT_PARTUUID=$(sudo blkid -s PARTUUID -o value "${LOOP}p2")
+          sudo tee mnt/esp/loader/entries/book4.conf > /dev/null << EOF
+          title      Arch Linux ARM (Galaxy Book4 Edge live)
+          linux      /vmlinuz-book4.efi
+          initrd     /initramfs-book4.img
+          devicetree /dtbs/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb
+          options    root=PARTUUID=${ROOT_PARTUUID} rw clk_ignore_unused pd_ignore_unused efi=noruntime quiet loglevel=2
+          EOF
+          sudo tee mnt/esp/loader/loader.conf > /dev/null << 'EOF'
+          default book4.conf
+          timeout 3
+          EOF
+
+          sudo umount mnt/esp mnt/root
+          sudo losetup -d "$LOOP"
+          zstd -T0 -19 "$IMG" -o "$IMG.zst"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: book4-edge-live-image
+          path: book4-edge-live.img.zst
+          retention-days: 5
