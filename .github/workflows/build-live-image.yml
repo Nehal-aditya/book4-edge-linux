@@ -3,8 +3,13 @@ name: Build Custom Arch Linux ARM Live Image (Book4 Edge, no squashfs)
 
 on:
   push:
-    branches: [ "main" ]
+    tags:
+      - "v*"
+      - "nightly-*"
   workflow_dispatch:
+
+permissions: 
+  contents: write
 
 jobs:
   build-image:
@@ -25,6 +30,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support parted dosfstools \
             e2fsprogs gdisk rsync zstd git
+
+      - name: Configure git identity for git am
+        run: |
+          # git am needs a committer identity to apply patches; the runner's
+          # global git config has none set by default, which is what was
+          # failing here.
+          cd workspace/kernel_build/linux-book4-edge
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Set up workspace
         run: |
@@ -291,10 +305,24 @@ jobs:
           sudo umount mnt/esp mnt/root
           sudo losetup -d "$LOOP"
           zstd -T0 -19 "$IMG" -o "$IMG.zst"
+          sha256sum book4-edge-live.img.zst > book4-edge-live.img.zst.sha256
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: book4-edge-live-image
-          path: book4-edge-live.img.zst
+          path: |
+            book4-edge-live.img.zst
+            book4-edge-live.img.zst.sha256
           retention-days: 5
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/nightly-')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          prerelease: ${{ startsWith(github.ref, 'refs/tags/nightly-') }}
+          generate_release_notes: true
+          files: |
+            book4-edge-live.img.zst
+            book4-edge-live.img.zst.sha256
