@@ -64,6 +64,36 @@ embedded) and modules built from exactly this tree, plus `SHA256SUMS`. Unpack, c
 `depmod <version>`, adapt the loader entry, then run `install.sh` for the rest. It is
 a one-time snapshot of the tagged commit; later kernels come from building the source.
 
+## Prebuilt installer image (this fork)
+
+This fork additionally publishes a bootable Arch Linux ARM live/installer image for
+the NP750XQA: KDE Plasma live session, Calamares to install to the internal disk,
+this tree's kernel/DTS/patches, firmware and userspace pieces already applied. Built
+by `.github/workflows/build-live-image.yml` on every push to `main`, released as
+`book4-edge-live.img.zst` (`zstd -d` it, then `dd` to a USB drive).
+
+Deliberately **not** squashfs-based: the live root is a plain writable ext4
+partition inside a raw GPT image (ESP + root), populated the same way an installed
+system is, rather than an unsquashed/overlay root. Squashfs decompression has been
+unreliable on some Snapdragon X boards in combination with this board's
+`clk_ignore_unused`/`pd_ignore_unused` requirements, so the image sidesteps it
+entirely on both the live side and the install side: Calamares is configured with
+`unpackfs.conf`'s file-copy source mode (`sourcefs: "file"`, `source: "/"`), copying
+the running live filesystem onto the target disk directly instead of unsquashing an
+image.
+
+The live medium boots via the standard `EFI/BOOT/BOOTAA64.EFI` removable-media
+fallback path, which works on stock UEFI firmware. The *installed* system still
+needs this board's own boot quirk handled — no runtime EFI variable writes, and
+systemd-boot has to live at `EFI/Microsoft/Boot/bootmgfw.efi` on the internal
+disk — which a Calamares `shellprocess` module applies post-install in place of the
+stock `bootloader` module.
+
+Known-rough edges in the image build, same as the base tree: HDMI, SD card and the
+second USB2 port are not wired; suspend is unverified; the camera needs the
+libcamera OV02C10 helper built at image-build time (slow under QEMU user-mode
+emulation on the CI runner — expect a long build, not a stuck one).
+
 ## Packages
 
 Beyond a base Arch ARM install: `linux-firmware linux-firmware-qcom
@@ -170,7 +200,10 @@ being verified on a second install before the first tag.
 
 zensanp (base tree), Kirill A. Korinsky and Valentin Manea (X1E80100 Book4 Edge
 DTS), Jens Glathe (eDP power/backlight wiring, ThinkBook 16), saddytech (EC
-mailbox protocol), the libcamera and linux-firmware projects.
+mailbox protocol), ciscobugger (NP750XQA/Snapdragon X Plus support — DTS,
+patches, firmware, EC driver and userspace pieces this fork builds on), the libcamera and linux-firmware projects. This fork's live/
+installer image (Calamares, KDE Plasma, the no-squashfs raw-image build) by
+Nehal-aditya.
 
 ## Licences
 
