@@ -36,7 +36,6 @@ jobs:
           # git am needs a committer identity to apply patches; the runner's
           # global git config has none set by default, which is what was
           # failing here.
-          cd workspace/kernel_build/linux-book4-edge
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
