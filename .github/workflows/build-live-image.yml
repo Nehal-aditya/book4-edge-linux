@@ -107,6 +107,14 @@ jobs:
           sudo mount --bind /sys "$R/sys"
           sudo mount --bind /proc "$R/proc"
 
+          # Temporarily provide the chroot with the runner's DNS resolver.
+          # Remove the extracted rootfs symlink first so the bind mount targets
+          # a regular file; unmounting prevents the runner's resolver config
+          # from being included in the shipped image.
+          sudo rm -f "$R/etc/resolv.conf"
+          sudo touch "$R/etc/resolv.conf"
+          sudo mount --bind /etc/resolv.conf "$R/etc/resolv.conf"
+
           sudo chroot "$R" /bin/bash -e << 'EOF'
           # Landlock LSM (which pacman's package-download sandbox needs to
           # drop to the restricted 'alpm' user) isn't reliably available
@@ -194,7 +202,7 @@ jobs:
             book4-splash-shutdown.service book4-splash-msm-load.service
           EOF
 
-          sudo umount "$R/dev" "$R/sys" "$R/proc"
+          sudo umount "$R/etc/resolv.conf" "$R/dev" "$R/sys" "$R/proc"
 
       - name: Build initramfs (repo's own mkinitcpio config, no live/overlay hook)
         run: |
