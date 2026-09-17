@@ -85,6 +85,37 @@ jobs:
           cd workspace/kernel_build/linux-book4-edge
           sudo make ARCH=arm64 INSTALL_MOD_PATH="${{ github.workspace }}/workspace/rootfs" modules_install
 
+      - name: Install kernel headers for DKMS
+        run: |
+          set -eux
+
+          R="${{ github.workspace }}/workspace/rootfs"
+          KSRCDIR="${{ github.workspace }}/workspace/kernel_build/linux-book4-edge"
+
+          cd "$KSRCDIR"
+          KVER="$(make -s kernelrelease)"
+
+          # DKMS needs the prepared kernel source tree and generated headers.
+          sudo mkdir -p "$R/usr/src/linux-book4-edge-$KVER"
+          sudo rsync -a \
+            --exclude='.git/' \
+            "$KSRCDIR/" \
+            "$R/usr/src/linux-book4-edge-$KVER/"
+
+          # These are the standard paths DKMS checks.
+          sudo mkdir -p "$R/usr/lib/modules/$KVER"
+          sudo ln -sfn \
+            "/usr/src/linux-book4-edge-$KVER" \
+            "$R/usr/lib/modules/$KVER/build"
+          sudo ln -sfn \
+            "/usr/src/linux-book4-edge-$KVER" \
+            "$R/usr/lib/modules/$KVER/source"
+
+          # Fail here with a useful error if the header tree is incomplete.
+          test -f "$R/usr/lib/modules/$KVER/build/Makefile"
+          test -f "$R/usr/lib/modules/$KVER/build/.config"
+          test -d "$R/usr/lib/modules/$KVER/build/include/generated"
+
       - name: Copy in userspace tree, driver source and firmware from your fork
         run: |
           R=workspace/rootfs
@@ -180,8 +211,16 @@ jobs:
           # --- EC driver: build+install via dkms. Version is 0.1 per the
           #     driver's own dkms.conf (PACKAGE_VERSION), not a guess. ---
           cd /opt/book4-edge-linux/driver/samsung-galaxybook-ec
+
+          KVER="$(find /usr/lib/modules \
+            -mindepth 1 -maxdepth 1 -type d \
+            -printf '%f\n' | grep '^7\.2\.0-book4-' | head -n1)"
+
+          test -n "$KVER"
+          test -e "/usr/lib/modules/$KVER/build/Makefile"
+          
           dkms add .
-          dkms install samsung-galaxybook-ec/0.1 -k "$(ls /lib/modules)"
+          dkms install "samsung-galaxybook-ec/0.1" -k "$KVER"
 
           # --- Boot splash: install its files and units directly rather than
           #     running its install.sh verbatim. That script's own
