@@ -135,7 +135,7 @@ jobs:
           pacman-key --init
           pacman-key --populate archlinuxarm
           pacman -Syu --noconfirm --needed \
-            linux-firmware-qcom linux-firmware-atheros \
+            linux-firmware-qcom linux-firmware-atheros linux-firmware-other linux-firmware-whence \
             mesa vulkan-freedreno pipewire pipewire-pulse wireplumber alsa-ucm-conf swh-plugins \
             i2c-tools earlyoom iwd networkmanager bluez bluez-utils dtc \
             plasma-desktop plasma-workspace plasma-nm plasma-pa power-profiles-daemon \
