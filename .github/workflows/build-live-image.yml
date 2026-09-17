@@ -287,7 +287,12 @@ jobs:
           KVER="$(make -s -C "$KSRCDIR" kernelrelease)"
 
           sudo test -d "$R/lib/modules/$KVER"
-          sudo test -f "$R/lib/modules/$KVER/build/Makefile"
+
+          # The build symlink is absolute and resolves relative to the chroot.
+          # Validate the copied source tree directly on the host instead.
+          sudo test -f "$R/usr/src/linux-book4-edge-$KVER/Makefile"
+          sudo test -f "$R/usr/src/linux-book4-edge-$KVER/.config"
+          sudo test -d "$R/usr/src/linux-book4-edge-$KVER/include/generated"
 
           sudo cp user_config_repo/boot/mkinitcpio-book4.conf \
             "$R/etc/mkinitcpio.conf.d/book4.conf"
