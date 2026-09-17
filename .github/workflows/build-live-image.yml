@@ -266,7 +266,15 @@ jobs:
             book4-splash-shutdown.service book4-splash-msm-load.service
           EOF
 
-          sudo umount "$R/etc/resolv.conf" "$R/dev" "$R/sys" "$R/proc"
+          # Unmount in reverse order. Fall back to lazy unmount if a chroot hook
+          # left /dev busy.
+          sudo umount "$R/etc/resolv.conf" 2>/dev/null || \
+            sudo umount -l "$R/etc/resolv.conf" 2>/dev/null || true
+
+          for p in proc sys dev; do
+            sudo umount "$R/$p" 2>/dev/null || \
+              sudo umount -l "$R/$p" 2>/dev/null || true
+          done
 
       - name: Build initramfs (repo's own mkinitcpio config, no live/overlay hook)
         run: |
@@ -274,7 +282,10 @@ jobs:
           sudo cp user_config_repo/boot/mkinitcpio-book4.conf "$R/etc/mkinitcpio.conf.d/book4.conf"
           sudo mount --bind /dev "$R/dev"; sudo mount --bind /sys "$R/sys"; sudo mount --bind /proc "$R/proc"
           sudo chroot "$R" mkinitcpio -k "$(ls "$R/lib/modules")" -g /boot/initramfs-book4.img
-          sudo umount "$R/dev" "$R/sys" "$R/proc"
+          for p in proc sys dev; do
+            sudo umount "$R/$p" 2>/dev/null || \
+              sudo umount -l "$R/$p" 2>/dev/null || true
+          done
 
       - name: SDDM autologin for the live session
         run: |
