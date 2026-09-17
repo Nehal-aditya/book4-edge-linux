@@ -278,10 +278,25 @@ jobs:
 
       - name: Build initramfs (repo's own mkinitcpio config, no live/overlay hook)
         run: |
-          R=workspace/rootfs
-          sudo cp user_config_repo/boot/mkinitcpio-book4.conf "$R/etc/mkinitcpio.conf.d/book4.conf"
-          sudo mount --bind /dev "$R/dev"; sudo mount --bind /sys "$R/sys"; sudo mount --bind /proc "$R/proc"
-          sudo chroot "$R" mkinitcpio -k "$(ls "$R/lib/modules")" -g /boot/initramfs-book4.img
+          set -eux
+          R="${{ github.workspace }}/workspace/rootfs"
+          KSRCDIR="${{ github.workspace }}/workspace/kernel_build/linux-book4-edge"
+
+          # Use the exact kernel release built for this image instead of
+          # blindly passing every module directory in /lib/modules.
+          KVER="$(make -s -C "$KSRCDIR" kernelrelease)"
+
+          sudo test -d "$R/lib/modules/$KVER"
+          sudo test -f "$R/lib/modules/$KVER/build/Makefile"
+
+          sudo cp user_config_repo/boot/mkinitcpio-book4.conf \
+            "$R/etc/mkinitcpio.conf.d/book4.conf"
+
+          sudo mount --bind /dev "$R/dev"
+          sudo mount --bind /sys "$R/sys"
+          sudo mount --bind /proc "$R/proc"
+
+          sudo chroot "$R" mkinitcpio -k "$KVER" -g /boot/initramfs-book4.img
           for p in proc sys dev; do
             sudo umount "$R/$p" 2>/dev/null || \
               sudo umount -l "$R/$p" 2>/dev/null || true
@@ -345,7 +360,7 @@ jobs:
             - "mkdir -p /boot/EFI/Microsoft/Boot"
             - "cp /usr/lib/systemd/boot/efi/systemd-bootaa64.efi /boot/EFI/Microsoft/Boot/bootmgfw.efi"
             - "mkdir -p /boot/dtbs"
-            - "cp /usr/lib/modules/*/dtb/qcom/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb /boot/dtbs/"
+            - "KVER=$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -name '7.2.0-book4-*' -printf '%f\n' | head -n1) && cp /usr/lib/modules/$KVER/dtb/qcom/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb /boot/dtbs/"
             - "sed -i 's/$/ efi=noruntime clk_ignore_unused pd_ignore_unused/' /boot/loader/entries/*.conf"
           EOF
 
