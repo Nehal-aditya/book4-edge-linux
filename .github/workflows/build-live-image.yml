@@ -122,10 +122,20 @@ jobs:
           # the same "switching to sandbox user 'alpm' failed" failure.
           sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
 
+          # CheckSpace also fails inside chroots — it reads
+          # /proc/self/mountinfo to find which filesystem a directory
+          # lives on, and that detection breaks under a bind-mounted
+          # /proc here ("could not determine cachedir mount point"),
+          # aborting even when there's genuinely enough free space.
+          # It's a boolean presence flag (no "= no" form) — comment out
+          # any existing line rather than add one, which would do the
+          # opposite of what's needed.
+          sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf
+
           pacman-key --init
           pacman-key --populate archlinuxarm
           pacman -Syu --noconfirm --needed \
-            linux-firmware linux-firmware-qcom linux-firmware-atheros \
+            linux-firmware-qcom linux-firmware-atheros \
             mesa vulkan-freedreno pipewire pipewire-pulse wireplumber alsa-ucm-conf swh-plugins \
             i2c-tools earlyoom iwd networkmanager bluez bluez-utils dtc \
             plasma-desktop plasma-workspace plasma-nm plasma-pa power-profiles-daemon \
