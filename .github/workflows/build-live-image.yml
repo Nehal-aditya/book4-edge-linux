@@ -111,10 +111,13 @@ jobs:
             "/usr/src/linux-book4-edge-$KVER" \
             "$R/usr/lib/modules/$KVER/source"
 
-          # Fail here with a useful error if the header tree is incomplete.
-          test -f "$R/usr/lib/modules/$KVER/build/Makefile"
-          test -f "$R/usr/lib/modules/$KVER/build/.config"
-          test -d "$R/usr/lib/modules/$KVER/build/include/generated"
+          # Validate the real source tree that was copied into the rootfs.
+          # These symlinks are meant to resolve inside the eventual chroot, so
+          # checking the host-side path under $R/usr/lib/modules/... is incorrect.
+          SRC="$R/usr/src/linux-book4-edge-$KVER"
+          sudo test -f "$SRC/Makefile"
+          sudo test -f "$SRC/.config"
+          sudo test -d "$SRC/include/generated"
 
       - name: Copy in userspace tree, driver source and firmware from your fork
         run: |
