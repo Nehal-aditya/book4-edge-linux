@@ -254,7 +254,7 @@ jobs:
           echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/91-builder
           chown -R builder:builder /opt/book4-edge-linux/userspace/camera/libcamera
           su builder -c "cd /opt/book4-edge-linux/userspace/camera/libcamera && \
-            CFLAGS+=' -Wno-error=array-bounds' CXXFLAGS+=' -Wno-error=array-bounds' makepkg --cleanbuild --noconfirm --syncdeps --install"
+            sed -i '/^build() {/a\  export CXXFLAGS=\"\${CXXFLAGS} -Wno-error=array-bounds\"' PKGBUILD && makepkg --cleanbuild --noconfirm --syncdeps --install"
           rm -f /etc/sudoers.d/91-builder
           userdel -r builder
 
