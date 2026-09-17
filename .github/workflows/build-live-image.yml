@@ -151,7 +151,7 @@ jobs:
           echo "calbuilder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/92-calbuilder
           su calbuilder -c "cd /home/calbuilder && \
             git clone https://aur.archlinux.org/calamares.git && \
-            cd calamares && makepkg --noconfirm --syncdeps --install"
+            cd calamares && makepkg --noconfirm --syncdeps --install --ignorearch"
           rm -f /etc/sudoers.d/92-calbuilder
           userdel -r calbuilder
 
