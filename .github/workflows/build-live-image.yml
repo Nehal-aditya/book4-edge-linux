@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build-image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout user config repo (your fork of ciscobugger/book4-edge-linux)
         uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
       - name: Install build dependencies on host
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user-static binfmt-support parted dosfstools \
+          sudo apt-get install -y parted dosfstools \
             e2fsprogs gdisk rsync zstd git
 
       - name: Set up workspace
@@ -61,13 +61,13 @@ jobs:
                  ../../../user_config_repo/patches/0002-*.patch \
                  ../../../user_config_repo/patches/0003-*.patch
 
-      - name: Cross-compile kernel, modules, DTBs
+      - name: Build kernel, modules, DTBs
         run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu bc flex bison libssl-dev libelf-dev
+          sudo apt-get install -y gcc bc flex bison libssl-dev libelf-dev
           cd workspace/kernel_build/linux-book4-edge
           cp ../../../user_config_repo/config/book4-edge.config .config
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image vmlinuz.efi modules dtbs
+          make ARCH=arm64 olddefconfig
+          make ARCH=arm64 -j"$(nproc)" Image vmlinuz.efi modules dtbs
           # Sanity check: fail fast if the DTB we need doesn't exist, rather
           # than discovering it three steps later.
           test -f arch/arm64/boot/dts/qcom/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb
@@ -102,7 +102,6 @@ jobs:
       - name: Configure and populate rootfs via chroot
         run: |
           R=workspace/rootfs
-          sudo cp /usr/bin/qemu-aarch64-static "$R/usr/bin/"
           sudo mount --bind /dev "$R/dev"
           sudo mount --bind /sys "$R/sys"
           sudo mount --bind /proc "$R/proc"
@@ -117,9 +116,10 @@ jobs:
 
           sudo chroot "$R" /bin/bash -e << 'EOF'
           # Landlock LSM (which pacman's package-download sandbox needs to
-          # drop to the restricted 'alpm' user) isn't reliably available
-          # under qemu-user-static emulation on this runner — disable
-          # pacman's sandbox rather than let it fail switching users.
+          # drop to the restricted 'alpm' user) isn't guaranteed to be
+          # enabled in the active LSM stack on GitHub's hosted runner
+          # kernels. Disable pacman's sandbox defensively rather than risk
+          # the same "switching to sandbox user 'alpm' failed" failure.
           sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
 
           pacman-key --init
@@ -131,7 +131,19 @@ jobs:
             plasma-desktop plasma-workspace plasma-nm plasma-pa power-profiles-daemon \
             breeze sddm sddm-kcm konsole dolphin kde-cli-tools kscreen ark \
             sudo dkms base-devel git rsync python zstd libdrm \
-            calamares kpmcore gptfdisk parted dosfstools e2fsprogs
+            kpmcore gptfdisk parted dosfstools e2fsprogs
+
+          # calamares isn't in core/extra/alarm (only its dependency kpmcore
+          # is, installed above) — build it from its AUR PKGBUILD instead,
+          # same throwaway-user + makepkg pattern already used below for
+          # the libcamera package.
+          useradd -m calbuilder
+          echo "calbuilder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/92-calbuilder
+          su calbuilder -c "cd /home/calbuilder && \
+            git clone https://aur.archlinux.org/calamares.git && \
+            cd calamares && makepkg --noconfirm --syncdeps --install"
+          rm -f /etc/sudoers.d/92-calbuilder
+          userdel -r calbuilder
 
           # --- Live-session user first: install.sh writes per-user PipeWire/
           #     WirePlumber/libcamera config to $SUDO_USER's home, so that
