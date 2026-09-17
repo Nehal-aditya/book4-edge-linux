@@ -321,8 +321,17 @@ jobs:
 
       - name: Configure Calamares for a file-copy install (no squashfs source)
         run: |
+          set -eux
           R=workspace/rootfs
           C="$R/etc/calamares"
+
+          # Calamares may not create its configuration directory until it is
+          # installed/configured. Ensure the destination exists before using
+          # tee to create the module configuration files.
+          sudo test -x "$R/usr/bin/calamares"
+          sudo mkdir -p "$C/modules"
+          sudo test -f "$C/settings.conf"
+          
           # unpackfs: copy the running live filesystem itself onto the target,
           # instead of unsquashing an image — this is the documented alternative
           # source mode and is what avoids squashfs entirely, on both ends.
