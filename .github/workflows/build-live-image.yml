@@ -174,7 +174,7 @@ jobs:
             i2c-tools earlyoom iwd networkmanager bluez bluez-utils dtc \
             plasma-desktop plasma-workspace plasma-nm plasma-pa power-profiles-daemon \
             breeze sddm sddm-kcm konsole dolphin kde-cli-tools kscreen ark \
-            sudo dkms base-devel git rsync python zstd libdrm \
+            sudo dkms base-devel git rsync python zstd libdrm libpisp \
             kpmcore gptfdisk parted dosfstools e2fsprogs
 
           # calamares isn't in core/extra/alarm (only its dependency kpmcore
@@ -254,7 +254,7 @@ jobs:
           echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/91-builder
           chown -R builder:builder /opt/book4-edge-linux/userspace/camera/libcamera
           su builder -c "cd /opt/book4-edge-linux/userspace/camera/libcamera && \
-            makepkg --noconfirm --syncdeps --install"
+            makepkg --cleanbuild --noconfirm --syncdeps --install"
           rm -f /etc/sudoers.d/91-builder
           userdel -r builder
 
