@@ -5,6 +5,8 @@
 #     to the S2MM006 (reg 0x4E = 0x12). The register is an action, not a state: it
 #     reads 0x12 while wedged, and re-writing it closes the connector->charger path.
 #     Readback reg 0x1C: b0 Provider, b1 Consumer, b2 Discharging (0x0A = closed).
+#     Attach reg 0x0E: bit0 = cable attached; 0x03 once a contract exists, 0x05 seen on
+#     a fresh attach before one. Any value with bit0 set counts as attached.
 #
 #  2. Upgrade the PD contract. On attach the PDIC requests PDO1 (5 V), a trickle for
 #     a 17 V pack. The chip stages a Request at reg 0x0080; bit 6 of reg 0x50 sends it.
@@ -13,6 +15,9 @@
 #       - the staged header decodes as a Request (type 2) with exactly one object,
 #       - its object position is higher than the contract in force,
 #       - at most MAX_TX_PER_ATTACH attempts per attach, TX_COOLDOWN_S apart.
+#     The chip does not always stage a valid Request itself (one port kept junk in the
+#     buffer for hours), so when the buffer is invalid or not an upgrade, a Request for
+#     the highest fixed PDO up to 20 V is written from the received Source_Capabilities.
 #
 #  3. Program the ISL9241 charger (0x09) from the smart battery's own request
 #     (0x0B, regs 0x15/0x14): the standard SBS host algorithm. Without it the
@@ -71,7 +76,38 @@ decode_msg(){
   return 0
 }
 
+attached(){ local a; a=$(rd "$1" 0x0e); [ -n "$a" ] && [ $(( $(hex "$a") & 1 )) -eq 1 ]; }
+
+# Write a Request for the best fixed PDO above position $2 into the TX buffer (0x0080),
+# built from the Source_Capabilities the chip received (0x0900: 2-byte header, 2 pad,
+# then 4-byte PDOs). Returns 1 when nothing better than the current PDO is offered.
+stage_request(){
+  local bus=$1 cur=$2 caps hdr n i w v a best=0 bi=0 ba=0 rdo k
+  caps=$(i2ctransfer -y "$bus" w2@0x33 0x09 0x00 r24 2>/dev/null) || return 1
+  set -- $caps; [ $# -eq 24 ] || return 1
+  hdr=$(( ($(hex "$2") << 8) | $(hex "$1") )); n=$(( (hdr >> 12) & 7 ))
+  [ $(( hdr & 0xF )) -eq 1 ] && [ "$n" -ge 1 ] || return 1
+  shift 4
+  for (( i=1; i<=n && i<=5; i++ )); do
+    w=$(( $(hex "$1") | ($(hex "$2") << 8) | ($(hex "$3") << 16) | ($(hex "$4") << 24) )); shift 4
+    [ $(( (w >> 30) & 3 )) -eq 0 ] || continue                  # fixed supply only
+    v=$(( ((w >> 10) & 0x3ff) * 50 )); a=$(( w & 0x3ff ))
+    [ "$v" -le 20000 ] || continue                              # ISL9241 input limit
+    [ "$v" -gt "$best" ] && { best=$v; bi=$i; ba=$a; }
+  done
+  [ "$bi" -gt "$cur" ] || return 1
+  # RDO: position, USB comm capable, no USB suspend, operating = max = PDO current
+  rdo=$(( (bi << 28) | (1 << 25) | (1 << 24) | (ba << 10) | ba ))
+  set -- 0x02 0x10 0x00 0x00 $(printf '0x%02x ' $(( rdo & 0xff )) $(( (rdo >> 8) & 0xff )) $(( (rdo >> 16) & 0xff )) $(( (rdo >> 24) & 0xff )))
+  for k in 0 1 2 3 4 5 6 7; do
+    i2ctransfer -y "$bus" w3@0x33 0x00 "$(printf '0x%02x' $(( 0x80 + k )))" "$1" 2>/dev/null || return 1
+    shift
+  done
+  log "i2c-$bus: staged Request for PDO $bi (${best} mV, $(( ba * 10 )) mA)"
+}
+
 declare -A tx_count      # bus -> transmissions this attach
+last_bad_t=""
 last_tx=0
 last_v=-1; last_c=-1
 
@@ -79,7 +115,7 @@ while true; do
   # --- 1. close the consumer VBUS switch if the cable is attached but AC is absent
   if [ "$(ac)" != "1" ]; then
     for bus in $PD0 $PD1; do
-      [ "$(rd "$bus" 0x0e)" = "0x03" ] || continue
+      attached "$bus" || continue
       [ "$(rd "$bus" 0x1c)" = "0x0a" ] && continue
       for i in 1 2 3 4 5; do
         i2ctransfer -y "$bus" w3@0x33 0x00 0x4e 0x12 2>/dev/null
@@ -94,7 +130,7 @@ while true; do
 
   # --- 2. upgrade the PD contract, guarded (see header comment)
   for bus in $PD0 $PD1; do
-    if [ "$(rd "$bus" 0x0e)" != "0x03" ]; then
+    if ! attached "$bus"; then
       tx_count[$bus]=0                       # detached: allow a fresh attempt next attach
       continue
     fi
@@ -102,11 +138,14 @@ while true; do
     [ "${tx_count[$bus]:-0}" -ge "$MAX_TX_PER_ATTACH" ] && continue
     [ $(( $(now_s) - last_tx )) -ge "$TX_COOLDOWN_S" ] || continue
 
-    staged=$(rd8 "$bus" 0x00 0x80); sent=$(rd8 "$bus" 0x06 0xa0)
-    decode_msg "$staged" || continue
-    s_type=$H_TYPE; s_nobj=$H_NOBJ; s_pos=$RDO_POS
-    decode_msg "$sent"   || continue
+    sent=$(rd8 "$bus" 0x06 0xa0); decode_msg "$sent" || continue
     c_pos=$RDO_POS
+    staged=$(rd8 "$bus" 0x00 0x80)
+    if ! decode_msg "$staged" || [ "$H_TYPE" -ne 2 ] || [ "$H_NOBJ" -ne 1 ] || [ "$RDO_POS" -le "$c_pos" ]; then
+      stage_request "$bus" "$c_pos" || continue
+      staged=$(rd8 "$bus" 0x00 0x80); decode_msg "$staged" || continue
+    fi
+    s_type=$H_TYPE; s_nobj=$H_NOBJ; s_pos=$RDO_POS
 
     # only a genuine single-object Request, and only if it is an actual upgrade
     [ "$s_type" -eq 2 ] && [ "$s_nobj" -eq 1 ] || continue
@@ -131,7 +170,11 @@ while true; do
     bt=$(i2cget -y "$CHG" 0x0b 0x08 w 2>/dev/null || echo 0x0000)
     v=$(hex "$bv"); c=$(hex "$bc"); t=$(hex "$bt")
 
-    if [ "$t" -gt "$TEMP_LIMIT_DK" ]; then
+    if [ "$t" -gt 3731 ] || [ "$t" -eq 0 ]; then
+      # 100 C or a zero read is a bus glitch, not a pack temperature; keep the last state
+      [ "$t" != "$last_bad_t" ] && log "battery temperature read $bt implausible, ignored"
+      last_bad_t=$t
+    elif [ "$t" -gt "$TEMP_LIMIT_DK" ]; then
       if [ "$last_c" != "0" ]; then
         i2cset -y "$CHG" 0x09 0x14 0x0000 w 2>/dev/null
         log "pack at $(( (t - 2732) / 10 )) C over limit - charging halted"
