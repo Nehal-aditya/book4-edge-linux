@@ -422,6 +422,53 @@ jobs:
               printf 'default book4.conf\ntimeout 3\n' > "$XBL/loader/loader.conf"
           EOF
 
+      - name: Clean build-only files from final rootfs
+        run: |
+          set -eux
+
+          R="${{ github.workspace }}/workspace/rootfs"
+          KSRCDIR="${{ github.workspace }}/workspace/kernel_build/linux-book4-edge"
+          KVER="$(make -s -C "$KSRCDIR" kernelrelease)"
+
+          # The prepared kernel source was needed for DKMS, but is not
+          # required by the installed/live system.
+          sudo rm -rf "$R/usr/src/linux-book4-edge-$KVER"
+
+          # Remove DKMS kernel-source links after deleting their target.
+          sudo rm -f \
+            "$R/usr/lib/modules/$KVER/build" \
+            "$R/usr/lib/modules/$KVER/source"
+
+          # Package archives are only needed while constructing the rootfs.
+          sudo rm -rf "$R/var/cache/pacman/pkg/"*
+
+          # Remove temporary build users and their home directories.
+          sudo rm -rf \
+            "$R/home/builder" \
+            "$R/home/calbuilder"
+
+          # Remove libcamera build sources and generated package files.
+          # Runtime libraries/binaries have already been installed by makepkg.
+          sudo rm -rf \
+            "$R/opt/book4-edge-linux/userspace/camera/libcamera/src" \
+            "$R/opt/book4-edge-linux/userspace/camera/libcamera/pkg"
+
+          # The source copy is no longer needed after the DKMS module was
+          # installed. Keep the installed module under /usr/lib/modules.
+          sudo rm -rf "$R/opt/book4-edge-linux/driver"
+
+          # Remove transient logs and temporary files.
+          sudo rm -rf \
+            "$R/var/log/journal/"* \
+            "$R/tmp/"* \
+            "$R/var/tmp/"*
+
+          echo "Final rootfs usage:"
+          sudo du -xsh "$R"
+
+          echo "Largest final rootfs directories:"
+          sudo du -xhd1 "$R" | sort -h | tail -n 20
+      
       - name: Assemble raw GPT image (ESP + ext4 root, no ISO9660/squashfs)
         run: |
           IMG=book4-edge-live.img
