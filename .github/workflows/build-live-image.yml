@@ -330,7 +330,14 @@ jobs:
           # tee to create the module configuration files.
           sudo test -x "$R/usr/bin/calamares"
           sudo mkdir -p "$C/modules"
-          sudo test -f "$C/settings.conf"
+
+          # Calamares ships its example settings.conf under
+          # /usr/share/calamares (the SHARE prefix), not /etc/calamares —
+          # /etc/calamares is the distro-override location, which takes
+          # precedence but is never auto-populated. Seed it from the SHARE
+          # default so the python edit below has something to open.
+          sudo test -f "$R/usr/share/calamares/settings.conf"
+          sudo cp "$R/usr/share/calamares/settings.conf" "$C/settings.conf"
           
           # unpackfs: copy the running live filesystem itself onto the target,
           # instead of unsquashing an image — this is the documented alternative
