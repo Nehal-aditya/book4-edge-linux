@@ -1,0 +1,439 @@
+name: Build Ubuntu 26.04 ARM64 Live ISO (Book4 Edge)
+
+on:
+  push:
+    tags:
+      - "ubuntu-*"
+      - "nightly-*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  UBUNTU_SUITE: resolute
+  UBUNTU_MIRROR: http://ports.ubuntu.com/ubuntu-ports
+  KERNEL_REPO: https://github.com/zensanp/linux-book4-edge.git
+  KERNEL_BRANCH: x1e80100-book4e-7.2-14-tmp
+  DTB: x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb
+
+jobs:
+  build-ubuntu-live-iso:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: user_config_repo
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            debootstrap \
+            squashfs-tools \
+            xorriso \
+            grub-efi-arm64-bin \
+            grub-efi-arm64-signed \
+            grub2-common \
+            rsync \
+            zstd \
+            git \
+            bc \
+            flex \
+            bison \
+            gcc \
+            libssl-dev \
+            libelf-dev \
+            kmod \
+            initramfs-tools
+
+      - name: Create workspace
+        run: |
+          mkdir -p \
+            workspace/rootfs \
+            workspace/kernel_build \
+            iso-root/casper \
+            iso-root/boot/grub \
+            iso-root/EFI/BOOT
+
+      - name: Clone and patch custom kernel
+        run: |
+          git clone \
+            --depth 1 \
+            --branch "$KERNEL_BRANCH" \
+            "$KERNEL_REPO" \
+            workspace/kernel_build/linux-book4-edge
+
+          cd workspace/kernel_build/linux-book4-edge
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git am ../../../user_config_repo/patches/0001-*.patch
+          git am ../../../user_config_repo/patches/0002-*.patch
+          git am ../../../user_config_repo/patches/0003-*.patch
+
+      - name: Build custom kernel
+        run: |
+          cd workspace/kernel_build/linux-book4-edge
+
+          cp ../../../user_config_repo/config/book4-edge.config .config
+
+          make ARCH=arm64 olddefconfig
+
+          make ARCH=arm64 -j"$(nproc)" \
+            Image \
+            vmlinuz.efi \
+            modules \
+            dtbs
+
+          test -f "arch/arm64/boot/dts/qcom/$DTB"
+
+      - name: Bootstrap Ubuntu 26.04 Resolute rootfs
+        run: |
+          sudo debootstrap \
+            --arch=arm64 \
+            "$UBUNTU_SUITE" \
+            workspace/rootfs \
+            "$UBUNTU_MIRROR"
+
+          sudo mount --bind /dev workspace/rootfs/dev
+          sudo mount --bind /sys workspace/rootfs/sys
+          sudo mount --bind /proc workspace/rootfs/proc
+
+          sudo rm -f workspace/rootfs/etc/resolv.conf
+          sudo cp /etc/resolv.conf workspace/rootfs/etc/resolv.conf
+
+          sudo chroot workspace/rootfs \
+            /debootstrap/debootstrap --second-stage
+
+          sudo chroot workspace/rootfs /bin/bash -eux <<'CHROOT'
+          export DEBIAN_FRONTEND=noninteractive
+
+          cat >/etc/apt/sources.list <<'APT'
+          deb http://ports.ubuntu.com/ubuntu-ports resolute main restricted universe multiverse
+          deb http://ports.ubuntu.com/ubuntu-ports resolute-updates main restricted universe multiverse
+          deb http://ports.ubuntu.com/ubuntu-ports resolute-security main restricted universe multiverse
+          APT
+
+          apt-get update
+
+          apt-get install -y \
+            ubuntu-desktop \
+            ubuntu-desktop-installer \
+            casper \
+            initramfs-tools \
+            systemd-sysv \
+            dbus \
+            udev \
+            sudo \
+            network-manager \
+            linux-firmware \
+            ntfs-3g \
+            exfatprogs \
+            udisks2 \
+            python3 \
+            rsync \
+            squashfs-tools \
+            grub-efi-arm64-bin \
+            grub-efi-arm64-signed \
+            kmod \
+            zstd
+
+          # Firmware hunting is provided by qcom-firmware-extract.
+          # Stubble is not a firmware extraction daemon.
+          apt-get install -y qcom-firmware-extract || true
+
+          useradd \
+            --create-home \
+            --shell /bin/bash \
+            --groups sudo,adm,audio,video,plugdev,netdev \
+            liveuser
+
+          passwd -d liveuser
+
+          cat >/etc/sudoers.d/90-liveuser <<'SUDO'
+          liveuser ALL=(ALL) NOPASSWD: ALL
+          SUDO
+
+          chmod 0440 /etc/sudoers.d/90-liveuser
+
+          systemctl enable NetworkManager || true
+
+          mkdir -p /etc/systemd/system/getty@tty1.service.d
+
+          cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<'GETTY'
+          [Service]
+          ExecStart=
+          ExecStart=-/sbin/agetty --autologin liveuser --noclear %I $TERM
+          GETTY
+          CHROOT
+
+          for p in proc sys dev; do
+            sudo umount -l "workspace/rootfs/$p" || true
+          done
+
+      - name: Install kernel, firmware, and initramfs files
+        run: |
+          set -eux
+
+          R="$PWD/workspace/rootfs"
+          K="$PWD/workspace/kernel_build/linux-book4-edge"
+
+          KVER="$(make -s -C "$K" kernelrelease)"
+
+          sudo make -C "$K" \
+            ARCH=arm64 \
+            INSTALL_MOD_PATH="$R" \
+            modules_install
+
+          sudo mkdir -p \
+            "$R/boot" \
+            "$R/opt/book4-edge-linux" \
+            "$R/etc/book4-edge" \
+            "$R/etc/initramfs-tools/conf.d" \
+            "$R/etc/initramfs-tools/hooks"
+
+          sudo cp \
+            "$K/arch/arm64/boot/vmlinuz.efi" \
+            "$R/boot/vmlinuz-book4.efi"
+
+          sudo cp -a \
+            user_config_repo/userspace \
+            user_config_repo/driver \
+            user_config_repo/firmware \
+            user_config_repo/scripts \
+            "$R/opt/book4-edge-linux/"
+
+          sudo cp \
+            user_config_repo/install.sh \
+            "$R/opt/book4-edge-linux/install.sh"
+
+          sudo chmod +x \
+            "$R/opt/book4-edge-linux/install.sh"
+
+          sudo cp \
+            user_config_repo/boot/initramfs-tools-book4.conf \
+            "$R/etc/initramfs-tools/conf.d/book4.conf"
+
+          sudo cp \
+            user_config_repo/boot/initramfs-tools/modules \
+            "$R/etc/initramfs-tools/modules"
+
+          sudo cp \
+            user_config_repo/boot/initramfs-tools/firmware-files.txt \
+            "$R/etc/book4-edge/firmware-files.txt"
+
+          sudo cp \
+            user_config_repo/boot/initramfs-tools/hooks/book4-edge \
+            "$R/etc/initramfs-tools/hooks/book4-edge"
+
+          sudo chmod +x \
+            "$R/etc/initramfs-tools/hooks/book4-edge"
+
+          # Copy the repository firmware into Ubuntu's firmware location.
+          sudo mkdir -p \
+            "$R/usr/lib/firmware/qcom/x1p42100/SAMSUNG/NP750XQA"
+
+          sudo cp -a \
+            user_config_repo/firmware/. \
+            "$R/usr/lib/firmware/"
+
+          # Verify all five files before initramfs generation.
+          while IFS= read -r firmware; do
+            case "$firmware" in
+              ""|\#*) continue ;;
+            esac
+
+            if [ ! -f "$R$firmware" ] && \
+               [ ! -f "$R/lib${firmware#/usr}" ]; then
+              echo "Missing required firmware: $firmware" >&2
+              exit 1
+            fi
+          done < user_config_repo/boot/initramfs-tools/firmware-files.txt
+
+      - name: Run repository installer
+        run: |
+          set -eux
+
+          R="$PWD/workspace/rootfs"
+
+          sudo mount --bind /dev "$R/dev"
+          sudo mount --bind /sys "$R/sys"
+          sudo mount --bind /proc "$R/proc"
+
+          sudo chroot "$R" /bin/bash -eux <<'CHROOT'
+          cd /opt/book4-edge-linux
+
+          # The repository installer contains Arch-specific operations.
+          # Unsupported optional actions must not prevent image construction.
+          SUDO_USER=liveuser DESTDIR=/ ./install.sh || true
+
+          if [ -x scripts/make-board-2.sh ]; then
+            scripts/make-board-2.sh || true
+
+            if [ -f board-2.bin ]; then
+              install -Dm644 \
+                board-2.bin \
+                /lib/firmware/ath12k/WCN7850/hw2.0/board-2.bin
+            fi
+          fi
+          CHROOT
+
+          for p in proc sys dev; do
+            sudo umount -l "$R/$p" || true
+          done
+
+      - name: Build custom initramfs
+        run: |
+          set -eux
+
+          R="$PWD/workspace/rootfs"
+          K="$PWD/workspace/kernel_build/linux-book4-edge"
+
+          KVER="$(make -s -C "$K" kernelrelease)"
+
+          sudo mount --bind /dev "$R/dev"
+          sudo mount --bind /sys "$R/sys"
+          sudo mount --bind /proc "$R/proc"
+
+          sudo chroot "$R" \
+            update-initramfs \
+            -c \
+            -k "$KVER"
+
+          sudo cp \
+            "$R/boot/initrd.img-$KVER" \
+            "$R/boot/initramfs-book4.img"
+
+          for p in proc sys dev; do
+            sudo umount -l "$R/$p" || true
+          done
+
+      - name: Add Ubuntu Desktop installer launcher
+        run: |
+          set -eux
+
+          R="$PWD/workspace/rootfs"
+
+          sudo mkdir -p "$R/home/liveuser/Desktop"
+
+          sudo tee \
+            "$R/home/liveuser/Desktop/Install-Ubuntu-Book4.desktop" \
+            >/dev/null <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Install Ubuntu 26.04 for Galaxy Book4 Edge
+          Comment=Install Ubuntu Resolute Raccoon
+          Exec=ubuntu-desktop-installer
+          Icon=ubuntu
+          Terminal=false
+          Categories=System;
+          EOF
+
+          sudo chmod +x \
+            "$R/home/liveuser/Desktop/Install-Ubuntu-Book4.desktop"
+
+          sudo chown -R 1000:1000 "$R/home/liveuser"
+
+      - name: Create SquashFS
+        run: |
+          set -eux
+
+          R="$PWD/workspace/rootfs"
+
+          sudo rm -rf "$R/var/lib/apt/lists/"*
+          sudo rm -rf "$R/var/cache/apt/archives/"*.deb
+          sudo rm -rf "$R/tmp/"*
+          sudo rm -rf "$R/var/tmp/"*
+
+          sudo mksquashfs \
+            "$R" \
+            iso-root/casper/filesystem.squashfs \
+            -comp zstd \
+            -Xcompression-level 19 \
+            -e boot
+
+      - name: Populate ISO boot files
+        run: |
+          set -eux
+
+          K="$PWD/workspace/kernel_build/linux-book4-edge"
+
+          sudo cp \
+            "$K/arch/arm64/boot/vmlinuz.efi" \
+            iso-root/casper/vmlinuz
+
+          sudo cp \
+            workspace/rootfs/boot/initramfs-book4.img \
+            iso-root/casper/initrd
+
+          sudo cp \
+            "$K/arch/arm64/boot/dts/qcom/$DTB" \
+            "iso-root/casper/$DTB"
+
+          sudo tee iso-root/boot/grub/grub.cfg >/dev/null <<EOF
+          set timeout=5
+          set default=0
+
+          menuentry 'Ubuntu 26.04 Resolute Raccoon Live - Galaxy Book4 Edge' {
+              linux /casper/vmlinuz \
+                boot=casper \
+                live \
+                devicetree=/casper/$DTB \
+                clk_ignore_unused \
+                pd_ignore_unused \
+                quiet \
+                ---
+              initrd /casper/initrd
+          }
+          EOF
+
+      - name: Build ARM64 GRUB EFI image
+        run: |
+          set -eux
+
+          grub-mkstandalone \
+            -O arm64-efi \
+            -o iso-root/EFI/BOOT/BOOTAA64.EFI \
+            --locales="" \
+            --fonts="" \
+            'boot/grub/grub.cfg=iso-root/boot/grub/grub.cfg'
+
+      - name: Build ISO
+        run: |
+          set -eux
+
+          xorriso -as mkisofs \
+            -V BOOK4-RESOLUTE \
+            -o book4-edge-ubuntu-26.04-live.iso \
+            -e EFI/BOOT/BOOTAA64.EFI \
+            -no-emul-boot \
+            -isohybrid-gpt-basdat \
+            iso-root
+
+          sha256sum \
+            book4-edge-ubuntu-26.04-live.iso \
+            > book4-edge-ubuntu-26.04-live.iso.sha256
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: book4-edge-ubuntu-26.04-live-iso
+          path: |
+            book4-edge-ubuntu-26.04-live.iso
+            book4-edge-ubuntu-26.04-live.iso.sha256
+          retention-days: 5
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/ubuntu-') || startsWith(github.ref, 'refs/tags/nightly-')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          prerelease: ${{ startsWith(github.ref, 'refs/tags/nightly-') }}
+          generate_release_notes: true
+          files: |
+            book4-edge-ubuntu-26.04-live.iso
+            book4-edge-ubuntu-26.04-live.iso.sha256

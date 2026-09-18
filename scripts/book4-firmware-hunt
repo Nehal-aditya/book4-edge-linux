@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+if ! command -v qcom-firmware-extract >/dev/null 2>&1; then
+    echo "qcom-firmware-extract is not installed." >&2
+    echo "Install it with: sudo apt install qcom-firmware-extract" >&2
+    exit 1
+fi
+
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [Windows-DriverStore-FileRepository]" >&2
+    exit 2
+fi
+
+if [ "$#" -eq 1 ]; then
+    exec sudo qcom-firmware-extract -d "$1"
+fi
+
+exec sudo qcom-firmware-extract

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Find Snapdragon X Firmware
+Comment=Search Windows partitions for Qualcomm firmware blobs
+Exec=pkexec /opt/book4-edge-linux/scripts/book4-firmware-hunt
+Icon=system-search
+Terminal=true
+Categories=System;HardwareSettings;

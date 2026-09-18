@@ -1,0 +1,49 @@
+#!/bin/sh
+
+set -eu
+
+PREREQ=""
+
+prereqs()
+{
+    printf '%s\n' "$PREREQ"
+}
+
+case "${1:-}" in
+    prereqs)
+        prereqs
+        exit 0
+        ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+FIRMWARE_LIST="/etc/book4-edge/firmware-files.txt"
+
+if [ ! -r "$FIRMWARE_LIST" ]; then
+    echo "book4-edge: missing $FIRMWARE_LIST" >&2
+    exit 1
+fi
+
+while IFS= read -r firmware; do
+    # Ignore empty lines and comments.
+    case "$firmware" in
+        ""|\#*)
+            continue
+            ;;
+    esac
+
+    source="$firmware"
+
+    # Ubuntu may expose /usr/lib/firmware through /lib/firmware.
+    if [ ! -f "$source" ] && [ -f "/lib${source#/usr}" ]; then
+        source="/lib${source#/usr}"
+    fi
+
+    if [ ! -f "$source" ]; then
+        echo "book4-edge: missing firmware: $firmware" >&2
+        exit 1
+    fi
+
+    copy_file "$source" "$firmware"
+done < "$FIRMWARE_LIST"

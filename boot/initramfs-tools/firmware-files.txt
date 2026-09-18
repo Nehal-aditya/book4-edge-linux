@@ -1,0 +1,5 @@
+/usr/lib/firmware/qcom/x1p42100/SAMSUNG/NP750XQA/qcdxkmsucpurwa.mbn
+/usr/lib/firmware/qcom/x1p42100/SAMSUNG/NP750XQA/qcadsp8380.mbn
+/usr/lib/firmware/qcom/x1p42100/SAMSUNG/NP750XQA/adsp_dtbs.elf
+/usr/lib/firmware/qcom/x1p42100/SAMSUNG/NP750XQA/qccdsp8380.mbn
+/usr/lib/firmware/qcom/x1p42100/SAMSUNG/NP750XQA/cdsp_dtbs.elf
