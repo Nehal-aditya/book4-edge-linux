@@ -376,6 +376,17 @@ jobs:
           s = open(p).read()
           s, n = re.subn(r'-\s*bootloader\n', '- shellprocess@book4-boot\n', s)
           assert n == 1, f"expected exactly 1 'bootloader' sequence entry, found {n} — settings.conf format may have changed"
+
+          # These all assume a standard pacman-installed `linux` package with
+          # a real mkinitcpio preset file — neither exists for this
+          # hand-built out-of-tree kernel. Rather than gamble on whether each
+          # one no-ops gracefully or hard-fails the whole sequence when it
+          # finds nothing to do, drop them: we ship our own working
+          # initramfs directly via unpackfs, and never enabled LUKS.
+          for name in ("initcpiocfg", "initcpio", "dracut", "dracutlukscfg",
+                       "luksbootkeyfile", "luksopenswaphookcfg", "packages"):
+              s = re.sub(rf'-\s*{name}\n', '', s)
+          
           open(p, "w").write(s)
           PYEOF
 
