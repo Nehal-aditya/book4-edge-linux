@@ -84,6 +84,11 @@ jobs:
         run: |
           cd workspace/kernel_build/linux-book4-edge
           sudo make ARCH=arm64 INSTALL_MOD_PATH="${{ github.workspace }}/workspace/rootfs" modules_install
+          # vmlinuz.efi otherwise only ever reaches the live medium's own ESP
+          # during image assembly further down — it needs to be part of "/"
+          # too, or Calamares' unpackfs (source: "/") has no way to carry it
+          # onto whatever a Calamares install actually produces.
+          sudo cp arch/arm64/boot/vmlinuz.efi "${{ github.workspace }}/workspace/rootfs/boot/vmlinuz-book4.efi"
 
       - name: Install kernel headers for DKMS
         run: |
@@ -369,7 +374,8 @@ jobs:
           import sys, re
           p = sys.argv[1]
           s = open(p).read()
-          s = re.sub(r'-\s*bootloader\n', '- shellprocess@book4-boot\n', s)
+          s, n = re.subn(r'-\s*bootloader\n', '- shellprocess@book4-boot\n', s)
+          assert n == 1, f"expected exactly 1 'bootloader' sequence entry, found {n} — settings.conf format may have changed"
           open(p, "w").write(s)
           PYEOF
 
@@ -378,11 +384,31 @@ jobs:
           timeout: 120
           script:
             - "bootctl install --no-variables"
-            - "mkdir -p /boot/EFI/Microsoft/Boot"
-            - "cp /usr/lib/systemd/boot/efi/systemd-bootaa64.efi /boot/EFI/Microsoft/Boot/bootmgfw.efi"
-            - "mkdir -p /boot/dtbs"
-            - "KVER=$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -name '7.2.0-book4-*' -printf '%f\n' | head -n1) && cp /usr/lib/modules/$KVER/dtb/qcom/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb /boot/dtbs/"
-            - "sed -i 's/$/ efi=noruntime clk_ignore_unused pd_ignore_unused/' /boot/loader/entries/*.conf"
+            - >
+              ESP="$(bootctl --print-esp-path)" &&
+              XBL="$(bootctl --print-boot-path)" &&
+              mkdir -p "$ESP/EFI/Microsoft/Boot" "$ESP/dtbs" "$XBL/loader/entries" &&
+              if [ -f "$ESP/EFI/Microsoft/Boot/bootmgfw.efi" ] &&
+                 [ ! -f "$ESP/EFI/Microsoft/Boot/bootmgfw-windows.efi" ]; then
+                cp "$ESP/EFI/Microsoft/Boot/bootmgfw.efi" \
+                   "$ESP/EFI/Microsoft/Boot/bootmgfw-windows.efi" &&
+                printf 'title   Windows Boot Manager\nefi     /EFI/Microsoft/Boot/bootmgfw-windows.efi\n' \
+                  > "$XBL/loader/entries/windows.conf";
+              fi &&
+              cp /usr/lib/systemd/boot/efi/systemd-bootaa64.efi \
+                 "$ESP/EFI/Microsoft/Boot/bootmgfw.efi" &&
+              KVER="$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -name '7.2.0-book4-*' -printf '%f\n' | head -n1)" &&
+              cp "/usr/lib/modules/$KVER/dtb/qcom/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb" "$ESP/dtbs/" &&
+              cp /boot/vmlinuz-book4.efi "$ESP/vmlinuz-book4.efi" &&
+              cp /boot/initramfs-book4.img "$ESP/initramfs-book4.img" &&
+              ROOT_PARTUUID="$(findmnt -no PARTUUID /)" &&
+              { printf 'title      Arch Linux ARM (Galaxy Book4 Edge)\n';
+                printf 'linux      /vmlinuz-book4.efi\n';
+                printf 'initrd     /initramfs-book4.img\n';
+                printf 'devicetree /dtbs/x1p42100-samsung-galaxy-book4-edge-np750xqa.dtb\n';
+                printf 'options    root=PARTUUID=%s rw efi=noruntime clk_ignore_unused pd_ignore_unused\n' "$ROOT_PARTUUID";
+              } > "$XBL/loader/entries/book4.conf" &&
+              printf 'default book4.conf\ntimeout 3\n' > "$XBL/loader/loader.conf"
           EOF
 
       - name: Assemble raw GPT image (ESP + ext4 root, no ISO9660/squashfs)
