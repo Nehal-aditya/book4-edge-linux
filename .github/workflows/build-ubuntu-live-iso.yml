@@ -47,7 +47,9 @@ jobs:
             libssl-dev \
             libelf-dev \
             kmod \
-            initramfs-tools
+            initramfs-tools \
+            dkms \
+            build-essential
 
       - name: Create workspace
         run: |
@@ -60,14 +62,10 @@ jobs:
 
       - name: Clone and patch custom kernel
         run: |
-          git clone \
-            --depth 1 \
-            --branch "$KERNEL_BRANCH" \
-            "$KERNEL_REPO" \
+          git clone --depth 1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" \
             workspace/kernel_build/linux-book4-edge
 
           cd workspace/kernel_build/linux-book4-edge
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -75,29 +73,20 @@ jobs:
           git am ../../../user_config_repo/patches/0002-*.patch
           git am ../../../user_config_repo/patches/0003-*.patch
 
-      - name: Build custom kernel
+      - name: Build custom kernel and DTB
         run: |
           cd workspace/kernel_build/linux-book4-edge
 
           cp ../../../user_config_repo/config/book4-edge.config .config
 
           make ARCH=arm64 olddefconfig
-
-          make ARCH=arm64 -j"$(nproc)" \
-            Image \
-            vmlinuz.efi \
-            modules \
-            dtbs
+          make ARCH=arm64 -j"$(nproc)" Image vmlinuz.efi modules dtbs
 
           test -f "arch/arm64/boot/dts/qcom/$DTB"
 
-      - name: Bootstrap Ubuntu 26.04 Resolute rootfs
+      - name: Bootstrap Ubuntu 26.04 rootfs
         run: |
-          sudo debootstrap \
-            --arch=arm64 \
-            "$UBUNTU_SUITE" \
-            workspace/rootfs \
-            "$UBUNTU_MIRROR"
+          sudo debootstrap --arch=arm64 "$UBUNTU_SUITE" workspace/rootfs "$UBUNTU_MIRROR"
 
           sudo mount --bind /dev workspace/rootfs/dev
           sudo mount --bind /sys workspace/rootfs/sys
@@ -106,8 +95,7 @@ jobs:
           sudo rm -f workspace/rootfs/etc/resolv.conf
           sudo cp /etc/resolv.conf workspace/rootfs/etc/resolv.conf
 
-          sudo chroot workspace/rootfs \
-            /debootstrap/debootstrap --second-stage
+          sudo chroot workspace/rootfs /debootstrap/debootstrap --second-stage
 
           sudo chroot workspace/rootfs /bin/bash -eux <<'CHROOT'
           export DEBIAN_FRONTEND=noninteractive
@@ -135,23 +123,28 @@ jobs:
             exfatprogs \
             udisks2 \
             python3 \
+            python3-yaml \
             rsync \
             squashfs-tools \
             grub-efi-arm64-bin \
             grub-efi-arm64-signed \
             kmod \
-            zstd
+            zstd \
+            i2c-tools \
+            earlyoom \
+            iwd \
+            bluez \
+            bluez-utils \
+            swh-plugins \
+            device-tree-compiler \
+            libdrm2 \
+            libcamera-tools \
+            libcamera-dev || true
 
-          # Firmware hunting is provided by qcom-firmware-extract.
-          # Stubble is not a firmware extraction daemon.
+          # Optional firmware hunting tool for Windows partition extraction.
           apt-get install -y qcom-firmware-extract || true
 
-          useradd \
-            --create-home \
-            --shell /bin/bash \
-            --groups sudo,adm,audio,video,plugdev,netdev \
-            liveuser
-
+          useradd --create-home --shell /bin/bash --groups sudo,adm,audio,video,plugdev,netdev liveuser
           passwd -d liveuser
 
           cat >/etc/sudoers.d/90-liveuser <<'SUDO'
@@ -160,22 +153,22 @@ jobs:
 
           chmod 0440 /etc/sudoers.d/90-liveuser
 
-          systemctl enable NetworkManager || true
-
           mkdir -p /etc/systemd/system/getty@tty1.service.d
-
           cat >/etc/systemd/system/getty@tty1.service.d/autologin.conf <<'GETTY'
           [Service]
           ExecStart=
           ExecStart=-/sbin/agetty --autologin liveuser --noclear %I $TERM
           GETTY
+
+          systemctl enable NetworkManager || true
+          systemctl enable systemd-timesyncd || true
           CHROOT
 
           for p in proc sys dev; do
             sudo umount -l "workspace/rootfs/$p" || true
           done
 
-      - name: Install kernel, firmware, and initramfs files
+      - name: Install kernel modules and prepare DKMS source tree
         run: |
           set -eux
 
@@ -189,16 +182,10 @@ jobs:
             INSTALL_MOD_PATH="$R" \
             modules_install
 
-          sudo mkdir -p \
-            "$R/boot" \
-            "$R/opt/book4-edge-linux" \
-            "$R/etc/book4-edge" \
-            "$R/etc/initramfs-tools/conf.d" \
-            "$R/etc/initramfs-tools/hooks"
+          sudo mkdir -p "$R/boot" "$R/opt/book4-edge-linux" "$R/etc/book4-edge"
+          sudo mkdir -p "$R/etc/initramfs-tools/conf.d" "$R/etc/initramfs-tools/hooks"
 
-          sudo cp \
-            "$K/arch/arm64/boot/vmlinuz.efi" \
-            "$R/boot/vmlinuz-book4.efi"
+          sudo cp "$K/arch/arm64/boot/vmlinuz.efi" "$R/boot/vmlinuz-book4.efi"
 
           sudo cp -a \
             user_config_repo/userspace \
@@ -207,13 +194,18 @@ jobs:
             user_config_repo/scripts \
             "$R/opt/book4-edge-linux/"
 
-          sudo cp \
-            user_config_repo/install.sh \
-            "$R/opt/book4-edge-linux/install.sh"
+          sudo cp user_config_repo/install.sh "$R/opt/book4-edge-linux/install.sh"
+          sudo chmod +x "$R/opt/book4-edge-linux/install.sh"
 
-          sudo chmod +x \
-            "$R/opt/book4-edge-linux/install.sh"
+          # Prepare the kernel source tree and symlinks for the EC driver's DKMS build.
+          sudo mkdir -p "$R/usr/src/linux-book4-edge-$KVER"
+          sudo rsync -a --exclude='.git/' "$K/" "$R/usr/src/linux-book4-edge-$KVER/"
 
+          sudo mkdir -p "$R/usr/lib/modules/$KVER"
+          sudo ln -sfn "/usr/src/linux-book4-edge-$KVER" "$R/usr/lib/modules/$KVER/build"
+          sudo ln -sfn "/usr/src/linux-book4-edge-$KVER" "$R/usr/lib/modules/$KVER/source"
+
+          # Copy the initramfs-tools config and hook from repo.
           sudo cp \
             user_config_repo/boot/initramfs-tools-book4.conf \
             "$R/etc/initramfs-tools/conf.d/book4.conf"
@@ -230,31 +222,42 @@ jobs:
             user_config_repo/boot/initramfs-tools/hooks/book4-edge \
             "$R/etc/initramfs-tools/hooks/book4-edge"
 
-          sudo chmod +x \
-            "$R/etc/initramfs-tools/hooks/book4-edge"
+          sudo chmod +x "$R/etc/initramfs-tools/hooks/book4-edge"
 
-          # Copy the repository firmware into Ubuntu's firmware location.
-          sudo mkdir -p \
-            "$R/usr/lib/firmware/qcom/x1p42100/SAMSUNG/NP750XQA"
+          # Copy the repo firmware into Ubuntu firmware paths.
+          sudo mkdir -p "$R/usr/lib/firmware/qcom/x1p42100/SAMSUNG/NP750XQA"
+          sudo cp -a user_config_repo/firmware/. "$R/usr/lib/firmware/"
 
-          sudo cp -a \
-            user_config_repo/firmware/. \
-            "$R/usr/lib/firmware/"
-
-          # Verify all five files before initramfs generation.
+          # Validate critical firmware files before initramfs generation.
           while IFS= read -r firmware; do
             case "$firmware" in
               ""|\#*) continue ;;
             esac
 
-            if [ ! -f "$R$firmware" ] && \
-               [ ! -f "$R/lib${firmware#/usr}" ]; then
+            if [ ! -f "$R$firmware" ] && [ ! -f "$R/lib${firmware#/usr}" ]; then
               echo "Missing required firmware: $firmware" >&2
               exit 1
             fi
           done < user_config_repo/boot/initramfs-tools/firmware-files.txt
 
-      - name: Run repository installer
+          # Boot splash integration.
+          if [ -d user_config_repo/userspace/boot-splash ]; then
+            sudo mkdir -p "$R/etc/systemd/system" "$R/etc/systemd/system/sddm.service.d"
+            cd user_config_repo/userspace/boot-splash
+            make
+            install -Dm755 book4-splash "$R/usr/local/bin/book4-splash"
+            install -Dm644 theme.conf "$R/etc/book4-splash/theme.conf"
+
+            for u in book4-splash book4-splash-release book4-splash-shutdown book4-splash-msm-load; do
+              install -Dm644 "units/$u.service" "$R/etc/systemd/system/$u.service"
+            done
+
+            install -Dm644 units/book4-splash-msm-gate.conf "$R/etc/modprobe.d/book4-splash-msm-gate.conf"
+            install -Dm644 units/sddm-release.conf "$R/etc/systemd/system/sddm.service.d/book4-splash-release.conf"
+            install -Dm644 units/sddm-restart-tolerance.conf "$R/etc/systemd/system/sddm.service.d/restart-tolerance.conf"
+          fi
+
+      - name: Install repo userspace and rootfs services
         run: |
           set -eux
 
@@ -267,19 +270,35 @@ jobs:
           sudo chroot "$R" /bin/bash -eux <<'CHROOT'
           cd /opt/book4-edge-linux
 
-          # The repository installer contains Arch-specific operations.
-          # Unsupported optional actions must not prevent image construction.
+          # install.sh is the main Book4 userspace/firmware installer.
+          # DESTDIR=/ makes it install to real absolute paths.
           SUDO_USER=liveuser DESTDIR=/ ./install.sh || true
 
-          if [ -x scripts/make-board-2.sh ]; then
-            scripts/make-board-2.sh || true
-
-            if [ -f board-2.bin ]; then
-              install -Dm644 \
-                board-2.bin \
-                /lib/firmware/ath12k/WCN7850/hw2.0/board-2.bin
+          # Samsung EC driver via DKMS.
+          if [ -d /opt/book4-edge-linux/driver/samsung-galaxybook-ec ]; then
+            cd /opt/book4-edge-linux/driver/samsung-galaxybook-ec
+            KVER="$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | grep '^7\\.2\\.0-book4-' | head -n1 || true)"
+            if [ -n "$KVER" ] && [ -e "/usr/lib/modules/$KVER/build/Makefile" ]; then
+              dkms add .
+              dkms install "samsung-galaxybook-ec/0.1" -k "$KVER"
             fi
           fi
+
+          # Boot splash service enablement.
+          if [ -d /opt/book4-edge-linux/userspace/boot-splash ]; then
+            systemctl enable book4-splash.service \
+              book4-splash-release.service \
+              book4-splash-shutdown.service \
+              book4-splash-msm-load.service || true
+          fi
+
+          # Book4 runtime services.
+          systemctl enable \
+            network-manager.service \
+            systemd-timesyncd.service \
+            zram-swap.service \
+            book4-pd-charge.service \
+            earlyoom.service || true
           CHROOT
 
           for p in proc sys dev; do
@@ -299,14 +318,9 @@ jobs:
           sudo mount --bind /sys "$R/sys"
           sudo mount --bind /proc "$R/proc"
 
-          sudo chroot "$R" \
-            update-initramfs \
-            -c \
-            -k "$KVER"
+          sudo chroot "$R" update-initramfs -c -k "$KVER"
 
-          sudo cp \
-            "$R/boot/initrd.img-$KVER" \
-            "$R/boot/initramfs-book4.img"
+          sudo cp "$R/boot/initrd.img-$KVER" "$R/boot/initramfs-book4.img"
 
           for p in proc sys dev; do
             sudo umount -l "$R/$p" || true
@@ -320,9 +334,7 @@ jobs:
 
           sudo mkdir -p "$R/home/liveuser/Desktop"
 
-          sudo tee \
-            "$R/home/liveuser/Desktop/Install-Ubuntu-Book4.desktop" \
-            >/dev/null <<'EOF'
+          sudo tee "$R/home/liveuser/Desktop/Install-Ubuntu-Book4.desktop" >/dev/null <<'EOF'
           [Desktop Entry]
           Type=Application
           Name=Install Ubuntu 26.04 for Galaxy Book4 Edge
@@ -333,9 +345,7 @@ jobs:
           Categories=System;
           EOF
 
-          sudo chmod +x \
-            "$R/home/liveuser/Desktop/Install-Ubuntu-Book4.desktop"
-
+          sudo chmod +x "$R/home/liveuser/Desktop/Install-Ubuntu-Book4.desktop"
           sudo chown -R 1000:1000 "$R/home/liveuser"
 
       - name: Create SquashFS
@@ -349,12 +359,8 @@ jobs:
           sudo rm -rf "$R/tmp/"*
           sudo rm -rf "$R/var/tmp/"*
 
-          sudo mksquashfs \
-            "$R" \
-            iso-root/casper/filesystem.squashfs \
-            -comp zstd \
-            -Xcompression-level 19 \
-            -e boot
+          sudo mksquashfs "$R" iso-root/casper/filesystem.squashfs \
+            -comp zstd -Xcompression-level 19 -e boot
 
       - name: Populate ISO boot files
         run: |
@@ -362,17 +368,9 @@ jobs:
 
           K="$PWD/workspace/kernel_build/linux-book4-edge"
 
-          sudo cp \
-            "$K/arch/arm64/boot/vmlinuz.efi" \
-            iso-root/casper/vmlinuz
-
-          sudo cp \
-            workspace/rootfs/boot/initramfs-book4.img \
-            iso-root/casper/initrd
-
-          sudo cp \
-            "$K/arch/arm64/boot/dts/qcom/$DTB" \
-            "iso-root/casper/$DTB"
+          sudo cp "$K/arch/arm64/boot/vmlinuz.efi" iso-root/casper/vmlinuz
+          sudo cp workspace/rootfs/boot/initramfs-book4.img iso-root/casper/initrd
+          sudo cp "$K/arch/arm64/boot/dts/qcom/$DTB" "iso-root/casper/$DTB"
 
           sudo tee iso-root/boot/grub/grub.cfg >/dev/null <<EOF
           set timeout=5
@@ -414,11 +412,9 @@ jobs:
             -isohybrid-gpt-basdat \
             iso-root
 
-          sha256sum \
-            book4-edge-ubuntu-26.04-live.iso \
-            > book4-edge-ubuntu-26.04-live.iso.sha256
+          sha256sum book4-edge-ubuntu-26.04-live.iso > book4-edge-ubuntu-26.04-live.iso.sha256
 
-      - name: Upload ISO artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: book4-edge-ubuntu-26.04-live-iso
