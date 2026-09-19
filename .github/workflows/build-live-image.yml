@@ -271,6 +271,12 @@ jobs:
             book4-splash-shutdown.service book4-splash-msm-load.service
           EOF
 
+          # Force ownership of all home configurations onto the liveuser context inside the chroot
+          chown -R 1000:1000 /home/liveuser
+
+          # Lock down the profile directory parameters securely for that user account
+          chmod 700 /home/liveuser
+
           # Unmount in reverse order. Fall back to lazy unmount if a chroot hook
           # left /dev busy.
           sudo umount "$R/etc/resolv.conf" 2>/dev/null || \
