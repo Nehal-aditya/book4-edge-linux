@@ -16,7 +16,7 @@ as patch 0003, for reading.
 | Display (KDB KD156N2030A03 eDP), backlight | works (`patches/0001`) |
 | Boot splash | `userspace/boot-splash` (plymouth does not work here) |
 | GPU (Adreno X1-45, freedreno/turnip) | works; see `userspace/udev/90-book4-gpu-floor.rules` for the devfreq floor |
-| Keyboard, touchpad | work (`userspace/udev/61-…` fixes the tablet misdetection) |
+| Keyboard, touchpad | work (`userspace/udev/61-…` fixes the tablet misdetection). Other SKUs use a different touchpad address: `docs/touchpad-variants.md` |
 | UFS storage | works |
 | Wi-Fi (WCN7850) | works with a board file built by `scripts/make-board-2.sh` |
 | Bluetooth | works; set the address, see below |
@@ -176,7 +176,8 @@ builds it. Rebuild the initramfs after installing firmware: the `FILES=` line in
   linux-firmware and vendors `ath12k-bdencoder` (ISC, qca-swiss-army-knife).
 - `reports/`: the EC and PD controller protocol notes, the DSDT
   disassembly, the panel EDID. `docs/camera-debugging.md` has the methods that
-  worked while bringing the camera up.
+  worked while bringing the camera up, and `docs/touchpad-variants.md` covers the
+  four touchpads Samsung fits in this chassis and how to read which one you have.
 
 ## Bluetooth address
 
