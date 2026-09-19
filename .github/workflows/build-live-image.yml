@@ -271,7 +271,7 @@ jobs:
             book4-splash-shutdown.service book4-splash-msm-load.service
 
           # Force ownership of all home configurations onto the liveuser context inside the chroot
-          chown -R 1000:1000 /home/liveuser
+          chown -R liveuser:liveuser /home/liveuser
 
           # Lock down the profile directory parameters securely for that user account
           chmod 700 /home/liveuser

@@ -883,11 +883,11 @@
 
 	status = "okay";
 
-	touchpad@40 {
+	touchpad@15 {
 		compatible = "hid-over-i2c";
-		reg = <0x40>;
+		reg = <0x15>;
 
-		hid-descr-addr = <0xe>;
+		hid-descr-addr = <0x1>;
 		interrupts-extended = <&tlmm 3 IRQ_TYPE_LEVEL_LOW>;
 
 		pinctrl-0 = <&tpad_default>;
