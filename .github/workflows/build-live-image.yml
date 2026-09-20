@@ -328,7 +328,6 @@ jobs:
           sudo mkdir -p "$R/home/liveuser/.config/autostart"
           printf '[Desktop Entry]\nType=Application\nName=Install Book4 Edge Linux\nExec=sudo calamares\nIcon=calamares\nTerminal=false\n' | \
             sudo tee "$R/home/liveuser/.config/autostart/calamares.desktop" >/dev/null
-          sudo chown -R 1000:1000 "$R/home/liveuser"
 
       - name: Configure Calamares for a file-copy install (no squashfs source)
         run: |
