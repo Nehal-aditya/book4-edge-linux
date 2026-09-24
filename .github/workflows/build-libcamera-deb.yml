@@ -95,57 +95,58 @@ jobs:
           cd workspace/build_dir/libcamera
           ABS_SRC_DIR=$(pwd)
           
-          # 1. Establish independent staging spaces for each target split package
-          STAGING_BASE=$(realpath ..)
+          # Force clear, absolute workspace destinations
+          STAGING_BASE="${{ github.workspace }}/workspace/build_dir"
           mkdir -p "$STAGING_BASE/pkg_libcamera/DEBIAN"
           mkdir -p "$STAGING_BASE/pkg_libcamera-ipa/DEBIAN"
           mkdir -p "$STAGING_BASE/pkg_libcamera-tools/DEBIAN"
           
-          # 2. Run standard installation redirected to a temporary combined layout folder
           mkdir -p "$STAGING_BASE/tmp_install"
           DESTDIR="$STAGING_BASE/tmp_install" meson install -C build
           
-          # 3. Process package_libcamera() layout & execute custom _pick mappings
           cd "$STAGING_BASE/tmp_install"
+          LIB_DIR=$(find usr/ -type d -name "libcamera" | grep -v "ipa" | head -n 1 | sed 's|/libcamera||')
           
-          # Move core library development files and layout trees out first
-          mkdir -p "$STAGING_BASE/pkg_libcamera/usr"
-          mv usr/include usr/lib usr/share "$STAGING_BASE/pkg_libcamera/usr/"
+          if [ -d usr/include ]; then
+            mkdir -p "$STAGING_BASE/pkg_libcamera/usr/include"
+            cp -r usr/include/* "$STAGING_BASE/pkg_libcamera/usr/include/"
+          fi
+          if [ -d usr/share ]; then
+            mkdir -p "$STAGING_BASE/pkg_libcamera/usr/share"
+            cp -r usr/share/* "$STAGING_BASE/pkg_libcamera/usr/share/"
+          fi
+          if [ -d "$LIB_DIR" ]; then
+            mkdir -p "$STAGING_BASE/pkg_libcamera/$LIB_DIR"
+            cp -r $LIB_DIR/* "$STAGING_BASE/pkg_libcamera/$LIB_DIR/"
+          fi
           
-          # Execute specific _pick functions for the signed IPA modules bundle splitting
-          mkdir -p "$STAGING_BASE/pkg_libcamera-ipa/usr/lib"
-          mv "$STAGING_BASE/pkg_libcamera/usr/lib/libcamera" "$STAGING_BASE/pkg_libcamera-ipa/usr/lib/"
+          mkdir -p "$STAGING_BASE/pkg_libcamera-ipa/$LIB_DIR"
+          mv "$STAGING_BASE/pkg_libcamera/$LIB_DIR/libcamera" "$STAGING_BASE/pkg_libcamera-ipa/$LIB_DIR/"
           
-          # Execute specific _pick functions for the Tools binaries bundle splitting
-          mkdir -p "$STAGING_BASE/pkg_libcamera-tools/usr/bin"
-          for tool in cam libcamera-bug-report lc-compliance qcam; do
-            if [ -f "$STAGING_BASE/pkg_libcamera/usr/bin/$tool" ]; then
-              mv "$STAGING_BASE/pkg_libcamera/usr/bin/$tool" "$STAGING_BASE/pkg_libcamera-tools/usr/bin/"
-            fi
-          done
-          # Clean up empty global binary directory inside the base library package layout
-          rm -rf "$STAGING_BASE/pkg_libcamera/usr/bin"
+          if [ -d usr/bin ]; then
+            mkdir -p "$STAGING_BASE/pkg_libcamera-tools/usr/bin"
+            for tool in cam libcamera-bug-report lc-compliance qcam; do
+              if [ -f "usr/bin/$tool" ]; then
+                mv "usr/bin/$tool" "$STAGING_BASE/pkg_libcamera-tools/usr/bin/"
+              fi
+            done
+          fi
 
-          # 4. Handle the critical internal IPA signature execution logic (maps options=(!strip))
           echo "=== Executing manual stripping and cryptographic signing for IPA libs ==="
-          strip "$STAGING_BASE/pkg_libcamera-ipa/usr/lib/libcamera/"*{.so,proxy} 2>/dev/null || true
-          strip "$STAGING_BASE/pkg_libcamera-ipa/usr/lib/libcamera/ipa/"*.so 2>/dev/null || true
+          strip "$STAGING_BASE/pkg_libcamera-ipa/$LIB_DIR/libcamera/"*{.so,proxy} 2>/dev/null || true
+          strip "$STAGING_BASE/pkg_libcamera-ipa/$LIB_DIR/libcamera/ipa/"*.so 2>/dev/null || true
           
-          # Isolate generated private signing key
-          PRIV_KEY=$(find "$ABS_SRC_DIR/build" -type f -iname "*ipa-priv-key.pem" | head -n 1)
-          
-          # Loop through binaries to calculate signature validation layers
-          for _lib in $(find "$STAGING_BASE/pkg_libcamera-ipa/usr/lib/libcamera/" -name "*.so"); do
-            "$ABS_SRC_DIR/src/ipa/ipa-sign.sh" "$PRIV_KEY" "$_lib" "${_lib}.sign"
+          PRIV_KEY=$(find "$ABS_SRC_DIR/build" -type f -name "*ipa-priv-key.pem" | head -n 1)
+          for _lib in $(find "$STAGING_BASE/pkg_libcamera-ipa/$LIB_DIR/libcamera/" -name "*.so"); do
+            "$ABS_SRC_DIR/src/ipa/ipa-sign.sh" "$PRIV_KEY" "$_lib" "$_lib.sign"
           done
 
       - name: Write Debian Control Manifest Profiles
         run: |
-          # Formulate baseline metadata configuration control cards matching your runtime requirements
-          STAGING_BASE="workspace/build_dir"
-          
-          # Core Package Card
-          cat << EOF > "$STAGING_BASE/pkg_libcamera/DEBIAN/control"
+          # Explicit target mapping directly into your staging base directory
+          TARGET_DIR="${{ github.workspace }}/workspace/build_dir"
+
+          cat << EOF > "$TARGET_DIR/pkg_libcamera/DEBIAN/control"
           Package: libcamera
           Version: 0.7.2-4.1
           Architecture: arm64
@@ -156,8 +157,7 @@ jobs:
           Description: A complex camera support library for Linux, Android, and ChromeOS
           EOF
 
-          # Signed IPA Modules Card
-          cat << EOF > "$STAGING_BASE/pkg_libcamera-ipa/DEBIAN/control"
+          cat << EOF > "$TARGET_DIR/pkg_libcamera-ipa/DEBIAN/control"
           Package: libcamera-ipa
           Version: 0.7.2-4.1
           Architecture: arm64
@@ -168,25 +168,25 @@ jobs:
           Description: A complex camera support library - signed IPA modules
           EOF
 
-          # Binary Diagnostic Tools Card
-          cat << EOF > "$STAGING_BASE/pkg_libcamera-tools/DEBIAN/control"
+          cat << EOF > "$TARGET_DIR/pkg_libcamera-tools/DEBIAN/control"
           Package: libcamera-tools
           Version: 0.7.2-4.1
           Architecture: arm64
           Maintainer: GitHub Actions Builder <actions@github.com>
           Section: utils
           Priority: optional
-          Depends: libc6, libgtest-dev, libcamera (= 0.7.2-4.1), libdrm2, libevent-2.1-7, libjpeg8, libstdc++6, libtiff6, libyaml-0-2, libqt6core6, libsdl2-2.0-0
+          Depends: libc6, libgtest-dev || libgtest0v5, libcamera (= 0.7.2-4.1), libdrm2, libevent-2.1-7, libjpeg8 || libjpeg62-turbo, libstdc++6, libtiff6, libyaml-0-2, libqt6core6, libsdl2-2.0-0
           Description: A complex camera support library - tools (cam, qcam)
           EOF
 
       - name: Compress Directory Layouts into Final .deb Binaries
         run: |
-          cd workspace
-          dpkg-deb --build pkg_libcamera ../output_packages/
-          dpkg-deb --build pkg_libcamera-ipa ../output_packages/
-          dpkg-deb --build pkg_libcamera-tools ../output_packages/
-          ls -lh ../output_packages/
+          # Shift directory scope directly to the actual staging root
+          cd ${{ github.workspace }}/workspace/build_dir
+          dpkg-deb --build pkg_libcamera ${{ github.workspace }}/output_packages/
+          dpkg-deb --build pkg_libcamera-ipa ${{ github.workspace }}/output_packages/
+          dpkg-deb --build pkg_libcamera-tools ${{ github.workspace }}/output_packages/
+          ls -lh ${{ github.workspace }}/output_packages/
 
       - name: Create GitHub Release and Upload Package Assets
         uses: softprops/action-gh-release@v3
