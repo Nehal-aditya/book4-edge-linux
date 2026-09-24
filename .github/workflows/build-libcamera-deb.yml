@@ -1,0 +1,213 @@
+name: Build Custom libcamera DEBs & Create Release (Native ARM64)
+
+on:
+  push:
+    tags:
+      - "libcamera-*" # Automatically fires when you push tags like libcamera-v0.7.2
+  workflow_dispatch: # Allows troubleshooting via manual dashboard overrides
+
+permissions:
+  contents: write # Crucial permission allowing the bot to generate tags and upload GitHub Releases
+
+jobs:
+  build-libcamera-debs:
+    runs-on: ubuntu-24.04-arm # Native ARM64 compilation for your Snapdragon target
+    
+    steps:
+      - name: Checkout user config repo
+        uses: actions/checkout@v4
+        with:
+          path: user_config_repo
+
+      - name: Free Disk Space
+        run: |
+          echo "=== Purging staging areas ==="
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
+          sudo docker image prune -a -f || true
+          sudo apt-get clean
+
+      - name: Install Debian Build Dependencies
+        run: |
+          sudo apt-get update
+          # Maps makedepends arrays perfectly to Debian APT tool naming conventions
+          sudo apt-get install -y \
+            build-essential meson ninja-build git pkg-config \
+            libdrm-dev libevent-dev libjpeg-dev libtiff-dev libyaml-dev \
+            libssl-dev qt6-base-dev qt6-tools-dev libsdl2-dev libudev-dev \
+            python3-jinja2 python3-ply python3-yaml libgtest-dev \
+            fakeroot debhelper
+
+      - name: Set up Workspace Folders
+        run: |
+          mkdir -p workspace/build_dir
+          mkdir -p output_packages
+
+      - name: Clone Upstream libcamera Source Code
+        run: |
+          # Matches: git+\(_url#tag=v\)pkgver from PKGBUILD
+          git clone --depth 1 --branch v0.7.2 \
+            https://git.libcamera.org/libcamera/libcamera.git \
+            workspace/build_dir/libcamera
+
+      - name: Emulate PKGBUILD prepare() Block
+        run: |
+          # Copy your patches from the specific nested repository subpath configuration
+          TARGET_PATCH_DIR="user_config_repo/userspace/camera/libcamera"
+          
+          cp "$TARGET_PATCH_DIR"/*-macro-redefinition.patch workspace/build_dir/ || true
+          cp "$TARGET_PATCH_DIR"/0001-*.patch workspace/build_dir/ || true
+          cp "$TARGET_PATCH_DIR"/0002-*.patch workspace/build_dir/ || true
+          
+          cd workspace/build_dir/libcamera
+          
+          # Exact translation of your patch application array steps
+          if [ -f ../*python3.14-macro-redefinition.patch ]; then
+            patch -Np1 < ../*python3.14-macro-redefinition.patch
+          fi
+          git apply --recount -v ../0001-ipa-libipa-add-ov02c10-camera-sensor-helper.patch
+          git apply -v ../0002-ipa-simple-adjust-read-look-from-tuning.patch
+
+          # Generate the local version file requested by utils/gen-version.sh
+          printf "0.7.2\n" > .tarball-version
+
+      - name: Emulate PKGBUILD build() Block
+        working-directory: ./workspace/build_dir/libcamera
+        run: |
+          # 1. Configured custom cxx flags to downgrade array errors to warnings
+          # 2. Disabled rpi pipelines completely by declaring explicit targets ('simple,vimc') to strip libpisp loops
+          meson setup build \
+            --buildtype=release \
+            -Dc_args="-Wno-error=array-bounds" \
+            -Dcpp_args="-Wno-error=array-bounds" \
+            -D v4l2=enabled \
+            -D tracing=disabled \
+            -D documentation=disabled \
+            -D gstreamer=disabled \
+            -D pycamera=disabled \
+            -D test=false \
+            -D pipelines=simple,vimc \
+            -D rpi-awb-nn=disabled
+            
+          meson compile -C build
+
+      - name: Emulate PKGBUILD package() and Split Logic Blocks
+        run: |
+          cd workspace/build_dir/libcamera
+          ABS_SRC_DIR=$(pwd)
+          
+          # 1. Establish independent staging spaces for each target split package
+          STAGING_BASE=$(realpath ..)
+          mkdir -p "$STAGING_BASE/pkg_libcamera/DEBIAN"
+          mkdir -p "$STAGING_BASE/pkg_libcamera-ipa/DEBIAN"
+          mkdir -p "$STAGING_BASE/pkg_libcamera-tools/DEBIAN"
+          
+          # 2. Run standard installation redirected to a temporary combined layout folder
+          mkdir -p "$STAGING_BASE/tmp_install"
+          DESTDIR="$STAGING_BASE/tmp_install" meson install -C build
+          
+          # 3. Process package_libcamera() layout & execute custom _pick mappings
+          cd "$STAGING_BASE/tmp_install"
+          
+          # Move core library development files and layout trees out first
+          mkdir -p "$STAGING_BASE/pkg_libcamera/usr"
+          mv usr/include usr/lib usr/share "$STAGING_BASE/pkg_libcamera/usr/"
+          
+          # Execute specific _pick functions for the signed IPA modules bundle splitting
+          mkdir -p "$STAGING_BASE/pkg_libcamera-ipa/usr/lib"
+          mv "$STAGING_BASE/pkg_libcamera/usr/lib/libcamera" "$STAGING_BASE/pkg_libcamera-ipa/usr/lib/"
+          
+          # Execute specific _pick functions for the Tools binaries bundle splitting
+          mkdir -p "$STAGING_BASE/pkg_libcamera-tools/usr/bin"
+          for tool in cam libcamera-bug-report lc-compliance qcam; do
+            if [ -f "$STAGING_BASE/pkg_libcamera/usr/bin/$tool" ]; then
+              mv "$STAGING_BASE/pkg_libcamera/usr/bin/$tool" "$STAGING_BASE/pkg_libcamera-tools/usr/bin/"
+            fi
+          done
+          # Clean up empty global binary directory inside the base library package layout
+          rm -rf "$STAGING_BASE/pkg_libcamera/usr/bin"
+
+          # 4. Handle the critical internal IPA signature execution logic (maps options=(!strip))
+          echo "=== Executing manual stripping and cryptographic signing for IPA libs ==="
+          strip "$STAGING_BASE/pkg_libcamera-ipa/usr/lib/libcamera/"*{.so,proxy} 2>/dev/null || true
+          strip "$STAGING_BASE/pkg_libcamera-ipa/usr/lib/libcamera/ipa/"*.so 2>/dev/null || true
+          
+          # Isolate generated private signing key
+          PRIV_KEY=$(find "$ABS_SRC_DIR/build" -type f -iname "*ipa-priv-key.pem" | head -n 1)
+          
+          # Loop through binaries to calculate signature validation layers
+          for _lib in $(find "$STAGING_BASE/pkg_libcamera-ipa/usr/lib/libcamera/" -name "*.so"); do
+            "$ABS_SRC_DIR/src/ipa/ipa-sign.sh" "$PRIV_KEY" "$_lib" "${_lib}.sign"
+          done
+
+      - name: Write Debian Control Manifest Profiles
+        run: |
+          # Formulate baseline metadata configuration control cards matching your runtime requirements
+          STAGING_BASE="workspace/build_dir"
+          
+          # Core Package Card
+          cat << EOF > "$STAGING_BASE/pkg_libcamera/DEBIAN/control"
+          Package: libcamera
+          Version: 0.7.2-4.1
+          Architecture: arm64
+          Maintainer: GitHub Actions Builder <actions@github.com>
+          Section: libs
+          Priority: optional
+          Depends: libc6, libgnutls30, libelf1, libgcc-s1, libglvnd0, libstdc++6, libunwind8, libyaml-0-2, libudev1, libcamera-ipa (= 0.7.2-4.1)
+          Description: A complex camera support library for Linux, Android, and ChromeOS
+          EOF
+
+          # Signed IPA Modules Card
+          cat << EOF > "$STAGING_BASE/pkg_libcamera-ipa/DEBIAN/control"
+          Package: libcamera-ipa
+          Version: 0.7.2-4.1
+          Architecture: arm64
+          Maintainer: GitHub Actions Builder <actions@github.com>
+          Section: libs
+          Priority: optional
+          Depends: libc6, libgcc-s1, libstdc++6, libcamera (= 0.7.2-4.1)
+          Description: A complex camera support library - signed IPA modules
+          EOF
+
+          # Binary Diagnostic Tools Card
+          cat << EOF > "$STAGING_BASE/pkg_libcamera-tools/DEBIAN/control"
+          Package: libcamera-tools
+          Version: 0.7.2-4.1
+          Architecture: arm64
+          Maintainer: GitHub Actions Builder <actions@github.com>
+          Section: utils
+          Priority: optional
+          Depends: libc6, libgtest-dev, libcamera (= 0.7.2-4.1), libdrm2, libevent-2.1-7, libjpeg8, libstdc++6, libtiff6, libyaml-0-2, libqt6core6, libsdl2-2.0-0
+          Description: A complex camera support library - tools (cam, qcam)
+          EOF
+
+      - name: Compress Directory Layouts into Final .deb Binaries
+        run: |
+          cd workspace
+          dpkg-deb --build pkg_libcamera ../output_packages/
+          dpkg-deb --build pkg_libcamera-ipa ../output_packages/
+          dpkg-deb --build pkg_libcamera-tools ../output_packages/
+          ls -lh ../output_packages/
+
+      - name: Create GitHub Release and Upload Package Assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            ### 📷 Custom `libcamera` Debian Release Matrix (`arm64`)
+            Translated directly from your custom **Arch Linux ARM PKGBUILD definition** for hardware compilation setups on the **Samsung Galaxy Book4 Edge**.
+            
+            #### 📦 Distribution Artifacts:
+            * `libcamera_*.deb` — Shared system layout utilities.
+            * `libcamera-ipa_*.deb` — Cryptographically signed software ISP / OV02C10 helper modules.
+            * `libcamera-tools_*.deb` — Interactive camera diagnostics (`cam`, `qcam`).
+            
+            #### 🛠️ Kali Live-Build Integration:
+            Drop these three files directly inside your local build repo workspace path at:
+            `config/packages.chroot/` before triggering your master `lb build` configuration strings.
+          files: |
+            output_packages/*.deb
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
