@@ -168,6 +168,7 @@ jobs:
           Description: A complex camera support library - signed IPA modules
           EOF
 
+          # FIXED: Swapped '||' for standard Debian '|' alternative separators
           cat << EOF > "$TARGET_DIR/pkg_libcamera-tools/DEBIAN/control"
           Package: libcamera-tools
           Version: 0.7.2-4.1
@@ -175,7 +176,7 @@ jobs:
           Maintainer: GitHub Actions Builder <actions@github.com>
           Section: utils
           Priority: optional
-          Depends: libc6, libgtest-dev || libgtest0v5, libcamera (= 0.7.2-4.1), libdrm2, libevent-2.1-7, libjpeg8 || libjpeg62-turbo, libstdc++6, libtiff6, libyaml-0-2, libqt6core6, libsdl2-2.0-0
+          Depends: libc6, libgtest-dev | libgtest0v5, libcamera (= 0.7.2-4.1), libdrm2, libevent-2.1-7, libjpeg8 | libjpeg62-turbo, libstdc++6, libtiff6, libyaml-0-2, libqt6core6, libsdl2-2.0-0
           Description: A complex camera support library - tools (cam, qcam)
           EOF
 
