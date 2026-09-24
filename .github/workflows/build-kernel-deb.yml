@@ -49,7 +49,7 @@ jobs:
         run: |
           cd workspace/kernel_build/linux-book4-edge
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@://github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Apply board patches from your fork
         run: |
@@ -76,11 +76,11 @@ jobs:
       - name: Compile Standard Debian Core Packages
         working-directory: ./workspace/kernel_build/linux-book4-edge
         run: |
-          THREADS=\$(nproc)
-          echo "Building kernel using \$THREADS compilation threads..."
+          THREADS=$(nproc)
+          echo "Building kernel using $THREADS compilation threads..."
           
           # bindeb-pkg generates the exact native, split debian structure Kali scripts need
-          make -j\$THREADS bindeb-pkg
+          make -j$THREADS bindeb-pkg
 
       - name: Organize Target Artifacts
         run: |
@@ -93,8 +93,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           # Automatically uses the pushed Git tag name (e.g., kernel-6.12.1)
-          tag_name: \${{ github.ref_name }}
-          name: Release \${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
           body: |
             ### Snapdragon X Elite Linux Kernel Build (`arm64`)
             Custom kernel built for the **Samsung Galaxy Book4 Edge** tailored specifically for deployment inside **Kali Linux Live ISO Installer scripts**.
@@ -112,4 +112,4 @@ jobs:
           draft: false
           prerelease: false
         env:
-          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
