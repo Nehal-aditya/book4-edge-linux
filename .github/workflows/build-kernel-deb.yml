@@ -1,3 +1,4 @@
+# This is an AI generated GitHub workflow
 name: Build Kali-Compatible Kernel DEBs & Create Release (Native ARM64)
 
 on:
@@ -41,7 +42,7 @@ jobs:
       - name: Clone zensanp kernel (Snapdragon X Elite Book4 Edge Branch)
         run: |
           git clone --depth 1 --branch x1e80100-book4e-7.2-14-tmp \
-            https://github.com \
+            https://github.com/zensanp/linux-book4-edge.git \
             workspace/kernel_build/linux-book4-edge
 
       - name: Configure git identity for git am
