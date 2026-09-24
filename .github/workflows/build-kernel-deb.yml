@@ -1,0 +1,114 @@
+name: Build Kali-Compatible Kernel DEBs & Create Release (Native ARM64)
+
+on:
+  push:
+    tags:
+      - "kernel-*" # Triggers automatically when pushing tags like kernel-6.12.1
+  workflow_dispatch: # Keeps manual trigger available for troubleshooting
+
+permissions: 
+  contents: write # Crucial permission allowing the bot to generate tags and create GitHub Releases
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-24.04-arm # Native ARM64 environment for your Snapdragon target
+    
+    steps:
+      - name: Checkout user config repo (your fork of ciscobugger/book4-edge-linux)
+        uses: actions/checkout@v4
+        with:
+          path: user_config_repo
+
+      - name: Free Disk Space
+        run: |
+          echo "=== Cleaning up runner disk space ==="
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell
+          sudo docker image prune -a -f || true
+          sudo apt-get clean
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libncurses-dev bison flex libssl-dev libelf-dev \
+            bc ccache kmod cpio rsync git wget xz-utils debhelper fakeroot \
+            libcap-dev libpci-dev
+
+      - name: Set up workspace
+        run: |
+          mkdir -p workspace/kernel_build
+
+      - name: Clone zensanp kernel (Snapdragon X Elite Book4 Edge Branch)
+        run: |
+          git clone --depth 1 --branch x1e80100-book4e-7.2-14-tmp \
+            https://github.com \
+            workspace/kernel_build/linux-book4-edge
+
+      - name: Configure git identity for git am
+        run: |
+          cd workspace/kernel_build/linux-book4-edge
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@://github.com"
+
+      - name: Apply board patches from your fork
+        run: |
+          cd workspace/kernel_build/linux-book4-edge
+          git am ../../../user_config_repo/patches/0001-*.patch \
+                 ../../../user_config_repo/patches/0002-*.patch \
+                 ../../../user_config_repo/patches/0003-*.patch
+
+      - name: Configure Kernel with olddefconfig
+        working-directory: ./workspace/kernel_build/linux-book4-edge
+        run: |
+          cp ../../../user_config_repo/config/book4-edge.config .config
+          
+          chmod +x scripts/config
+          scripts/config --disable SYSTEM_TRUSTED_KEYS
+          scripts/config --disable SYSTEM_REVOCATION_KEYS
+          scripts/config --disable DEBUG_INFO
+          
+          # Force a custom version string to make it easily identifiable in the Kali ISO
+          scripts/config --set-str LOCALVERSION "-book4-edge-kali"
+          
+          make olddefconfig
+
+      - name: Compile Standard Debian Core Packages
+        working-directory: ./workspace/kernel_build/linux-book4-edge
+        run: |
+          THREADS=\$(nproc)
+          echo "Building kernel using \$THREADS compilation threads..."
+          
+          # bindeb-pkg generates the exact native, split debian structure Kali scripts need
+          make -j\$THREADS bindeb-pkg
+
+      - name: Organize Target Artifacts
+        run: |
+          mkdir -p output_packages
+          # Relocate generated packages (Dropped right above the source path by bindeb-pkg)
+          mv workspace/kernel_build/*.deb output_packages/
+          ls -lh output_packages/
+
+      - name: Create GitHub Release and Upload DEB Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          # Automatically uses the pushed Git tag name (e.g., kernel-6.12.1)
+          tag_name: \${{ github.ref_name }}
+          name: Release \${{ github.ref_name }}
+          body: |
+            ### Snapdragon X Elite Linux Kernel Build (`arm64`)
+            Custom kernel built for the **Samsung Galaxy Book4 Edge** tailored specifically for deployment inside **Kali Linux Live ISO Installer scripts**.
+            
+            #### 📦 Included Packages:
+            * `linux-image-*.deb` — Core bootable kernel & driver modules.
+            * `linux-headers-*.deb` — Architecture development headers.
+            * `linux-libc-dev.deb` — Native userspace API bindings.
+            
+            #### 🛠️ Installation inside Kali live-build:
+            Place these packages inside your build workspace directory at:
+            `config/packages.chroot/`
+          files: |
+            output_packages/*.deb
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
