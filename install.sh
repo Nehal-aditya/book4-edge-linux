@@ -23,6 +23,7 @@ echo "memory:"
 put 755 memory/zram-swap                    /usr/local/bin/zram-swap
 put 644 memory/zram-swap.service            /etc/systemd/system/zram-swap.service
 put 644 memory/99-zram.conf                 /etc/sysctl.d/99-zram.conf
+put 644 memory/mglru.conf                   /etc/tmpfiles.d/mglru.conf
 put 644 memory/earlyoom                     /etc/default/earlyoom
 echo "audio: ALSA UCM profile"
 U=/usr/share/alsa/ucm2/conf.d/x1e80100
@@ -66,6 +67,7 @@ command -v i2ctransfer >/dev/null || echo "note: install i2c-tools; the charging
 systemctl daemon-reload
 udevadm control --reload
 sysctl -q --system
+systemd-tmpfiles --create /etc/tmpfiles.d/mglru.conf
 systemctl enable --now zram-swap.service book4-pd-charge.service
 command -v earlyoom >/dev/null && systemctl enable --now earlyoom.service
 echo "done. Log out and in (or restart pipewire/wireplumber) for the audio and camera config."
