@@ -1,0 +1,72 @@
+# This is an AI generated github workflow
+name: Build Custom Arch Linux ARM Live Image (Book4 Edge, no squashfs)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clone-push:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout user config repo (your fork of ciscobugger/book4-edge-linux)
+        uses: actions/checkout@v4
+        with:
+          path: user_config_repo
+
+      - name: Free up runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune -a -f || true
+
+      - name: Install build dependencies on host
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git python3 curl gh
+
+      - name: Auth GitHub CLI
+        run: |
+          echo "${{ secrets.REPO_GH_TOKEN }}" | gh auth login --with-token
+          gh auth setup-git
+
+      - name: Set up workspace
+        run: |
+          mkdir -p workspace/kernel_build
+
+      - name: Clone zensanp kernel (correct URL + branch, matches README)
+        run: |
+          git clone --branch x1e80100-book4e-7.2-14-tmp \
+            https://github.com/zensanp/linux-book4-edge.git \
+            workspace/kernel_build/linux-book4-edge
+          cd workspace/kernel_build/linux-book4-edge
+          # The commit pinned in the README (2685c75587ff) is the tip of this
+          # branch as of writing; fetch full history only if it ever moves on.
+          git log -1 --oneline
+
+      - name: Configure git identity for git am
+        run: |
+          # git am needs a committer identity to apply patches; the runner's
+          # global git config has none set by default, which is what was
+          # failing here.
+          cd workspace/kernel_build/linux-book4-edge
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Apply board patches from your fork
+        run: |
+          cd workspace/kernel_build/linux-book4-edge
+          git am ../../../user_config_repo/patches/0001-*.patch \
+                 ../../../user_config_repo/patches/0002-*.patch \
+                 ../../../user_config_repo/patches/0003-*.patch
+
+      - name: Copy kernel config
+        run: |
+          cd workspace/kernel_build/linux-book4-edge
+          cp ../../../user_config_repo/config/book4-edge.config .config
+
+      - name: Push repo using gh cli
+        run: |
+          cd workspace/kernel_build/linux-book4-edge
+          gh repo create Nehal-aditya/book4-edge-kernel --public -y || true
+          git remote remove origin
+          git remote add origin https://github.com/Nehal-aditya/book4-edge-kernel.git
+          git push -u origin x1e80100-book4e-7.2-14-tmp
