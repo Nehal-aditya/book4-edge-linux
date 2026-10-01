@@ -67,6 +67,34 @@ jobs:
         run: |
           cd workspace/kernel_build/linux-book4-edge
           gh repo create Nehal-aditya/book4-edge-kernel --public -y || true
-          git remote remove origin
+          
+          git remote remove origin || true
           git remote add origin https://github.com/Nehal-aditya/book4-edge-kernel.git
-          git push -u origin x1e80100-book4e-7.2-14-tmp
+          
+          # Configure Git to optimize buffer sizes for large transfers
+          git config http.postBuffer 524288000
+          git config core.compression 0
+
+          BRANCH="x1e80100-book4e-7.2-14-tmp"
+          
+          echo "Analyzing commit log history..."
+          # Fetch all commit hashes in chronological order (oldest to newest)
+          commits=$(git rev-list --reverse HEAD)
+          total_commits=$(echo "$commits" | wc -l)
+          echo "Total commits to migrate: $total_commits"
+
+          count=0
+          batch_size=50000
+
+          # Progressively push history in chunks of 50,000 commits
+          for commit in $commits; do
+            count=$((count + 1))
+            if [ $((count % batch_size)) -eq 0 ]; then
+              echo "Pushing historical chunk up to commit #$count..."
+              git push origin $commit:refs/heads/$BRANCH || true
+            fi
+          done
+
+          # Push the final remaining commits and complete the branch tracking setup
+          echo "Pushing final tip of the branch and setting upstream..."
+          git push -u origin refs/heads/$BRANCH
