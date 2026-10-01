@@ -1,5 +1,5 @@
 # This is an AI generated github workflow
-name: Build Custom Arch Linux ARM Live Image (Book4 Edge, no squashfs)
+name: Create and push patched kernel repo for book4 edge x plus
 
 on:
   workflow_dispatch:
