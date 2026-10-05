@@ -12,5 +12,7 @@ Differences from the config the machine was first brought up with, and why:
 | `BT_RFCOMM=m`, `BT_RFCOMM_TTY=y` | Bluetooth headset microphone (HFP/HSP); bluetoothd logs "RFCOMM server failed" without it |
 | `PKCS8_PRIVATE_KEY_PARSER=m` | EAP-TLS Wi-Fi with PKCS#8 keys; also silences iwd's modules-load error |
 | `ZRAM=m`, `ZSMALLOC=m`, LZ4 + ZSTD backends | compressed swap in RAM; see `userspace/memory` |
+| `LRU_GEN=y`, `LRU_GEN_ENABLED=y` | MGLRU reclaim; with `userspace/memory/mglru.conf` a memory squeeze stops one process instead of freezing the desktop (`docs/memory.md`) |
+| `CMA_SYSFS=y`, `CMA_DEBUGFS=y` | the CMA pool's own counters in `/sys/kernel/mm/cma/`, to compare with the drifting global count (`docs/memory.md`) |
 
 Everything else is unchanged from the base tree's config.

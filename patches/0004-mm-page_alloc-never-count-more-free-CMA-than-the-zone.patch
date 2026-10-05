@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ciscobugger <xizko55@gmail.com>
+Date: Mon, 28 Sep 2026 18:30:00 +0200
+Subject: [PATCH 4/4] mm/page_alloc: never count more free CMA than the zone
+ holds
+
+Workaround for a counter drift seen on this machine, not a root-cause fix.
+
+During uptime NR_FREE_CMA_PAGES grows far past the only CMA pool (the
+device tree's 128 MB linux,cma, 32768 pages): 34013 against 11642 pages
+really free on the CMA free lists, and 111 in the DMA zone, which holds no
+CMA pageblocks at all. The pool itself is fine; only the counter drifts.
+
+__zone_watermark_unusable_free() adds NR_FREE_CMA_PAGES to the unusable
+free memory of every allocation that cannot use CMA. With the drifted
+counter usable free memory goes negative: kswapd and GFP_ATOMIC
+allocations fail ("page allocation failure", ath12k rx buffers -12) and
+the desktop freezes with gigabytes available and zram unused.
+
+Cap the value at zone_cma_pages() in the watermark check and in the
+__rmqueue CMA balance. With a correct counter the result is unchanged.
+
+Signed-off-by: ciscobugger <xizko55@gmail.com>
+---
+ mm/page_alloc.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index ee902a468..eac894fdf 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -2463,7 +2463,7 @@ __rmqueue(struct zone *zone, unsigned int order, int migratetype,
+ 		 * is in the CMA area.
+ 		 */
+ 		if (alloc_flags & ALLOC_CMA &&
+-		    zone_page_state(zone, NR_FREE_CMA_PAGES) >
++		    min(zone_page_state(zone, NR_FREE_CMA_PAGES), zone_cma_pages(zone)) >
+ 		    zone_page_state(zone, NR_FREE_PAGES) / 2) {
+ 			page = __rmqueue_cma_fallback(zone, order);
+ 			if (page)
+@@ -3569,9 +3569,15 @@ static inline long __zone_watermark_unusable_free(struct zone *z,
+ 		unusable_free += READ_ONCE(z->nr_free_highatomic);
+ 
+ #ifdef CONFIG_CMA
+-	/* If allocation can't use CMA areas don't use free CMA pages */
++	/*
++	 * If allocation can't use CMA areas don't use free CMA pages. Never count
++	 * more than the zone's CMA pages: on the Book4 Edge (X1P42100) the
++	 * NR_FREE_CMA_PAGES counter drifts far past the 128 MB pool during uptime,
++	 * which made usable free negative and starved kswapd and atomic allocations.
++	 */
+ 	if (!(alloc_flags & ALLOC_CMA))
+-		unusable_free += zone_page_state(z, NR_FREE_CMA_PAGES);
++		unusable_free += min(zone_page_state(z, NR_FREE_CMA_PAGES),
++				     zone_cma_pages(z));
+ #endif
+ 
+ 	return unusable_free;
+-- 
+2.55.0
