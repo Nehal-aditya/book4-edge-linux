@@ -59,7 +59,8 @@ jobs:
           cd workspace/kernel_build/linux-book4-edge
           git am ../../../user_config_repo/patches/0001-*.patch \
                  ../../../user_config_repo/patches/0002-*.patch \
-                 ../../../user_config_repo/patches/0003-*.patch
+                 ../../../user_config_repo/patches/0003-*.patch \
+                 ../../../user_config_repo/patches/0004-*.patch
 
       - name: Build kernel, modules, DTBs
         run: |
