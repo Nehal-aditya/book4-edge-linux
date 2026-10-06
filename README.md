@@ -24,6 +24,7 @@ as patch 0003, for reading.
 | Camera (OV02C10, 2 MP) | works through libcamera; needs `userspace/camera` |
 | USB-C charging | works with `userspace/charging/book4-pd-charge` |
 | Battery, AC, EC temperatures, fan level | `driver/samsung-galaxybook-ec` |
+| Memory under load | freeze fixes: `patches/0004`, MGLRU and zram (`docs/memory.md`); tested for hours, not yet days |
 | Suspend | not verified |
 | HDMI out, SD card, second USB2 port | not wired / not tested |
 | Video decode (iris) | driver built, DT node left disabled |
@@ -34,7 +35,7 @@ as patch 0003, for reading.
 ```sh
 git clone https://github.com/zensanp/linux-book4-edge && cd linux-book4-edge
 git checkout 2685c75587ff
-git am ../patches/*.patch                 # panel, camera hflip, the board DTS
+git am ../patches/*.patch                 # panel, camera hflip, the board DTS, CMA counter cap
 cp ../config/book4-edge.config .config && make olddefconfig
 make -j"$(nproc)" Image vmlinuz.efi modules dtbs
 sudo make modules_install
@@ -136,7 +137,8 @@ builds it. Rebuild the initramfs after installing firmware: the `FILES=` line in
 - `dts/`: the board file. BSD-3-Clause, credits in the header.
 - `patches/`: `0001` adds the panel to panel-edp; `0002` mirrors the
   front camera's HFLIP (board-specific hack, explained in the message); `0003`
-  adds the board DTS to the tree.
+  adds the board DTS to the tree; `0004` caps a free-CMA counter that drifts
+  during uptime and froze the desktop (`docs/memory.md`).
   `patches/debug/` holds CSIPHY diagnostics that the verified kernel carried; not a fix.
 - `config/`: the kernel config and what was changed from the base and why.
 - `driver/samsung-galaxybook-ec/`: ENE KB9058 EC over I2C: battery, AC,
@@ -155,6 +157,9 @@ builds it. Rebuild the initramfs after installing firmware: the `FILES=` line in
   policy as the last-ditch guard. Comments in the files say why systemd-oomd
   is not used here. `zram-mod/build.sh` builds zram out of tree for a kernel
   that lacks `CONFIG_ZRAM` (the community builds before this config).
+  `mglru.conf` turns on the anti-thrash setting of MGLRU, which the config
+  now builds; together with `patches/0004` this is the fix for the freezes
+  (`docs/memory.md`).
 - `userspace/audio/`: the ALSA UCM profile (`ucm2/`; alsa-ucm-conf has no
   Samsung entry, and without a profile the card has no usable devices), the
   WirePlumber channel map (the speaker PCM is 4 slots, FL/RL/FR/RR by the
