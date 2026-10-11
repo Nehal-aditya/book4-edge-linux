@@ -120,6 +120,8 @@ jobs:
             sudo \
             network-manager \
             linux-firmware \
+            build-essential \
+            dkms \
             ntfs-3g \
             exfatprogs \
             udisks2 \
