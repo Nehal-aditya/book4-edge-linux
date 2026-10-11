@@ -99,7 +99,7 @@ jobs:
           sudo rm -f workspace/rootfs/etc/resolv.conf
           sudo cp /etc/resolv.conf workspace/rootfs/etc/resolv.conf
 
-          sudo chroot workspace/rootfs /debootstrap/debootstrap --second-stage
+          sudo chroot workspace/rootfs workspace/rootfs/debootstrap/debootstrap --second-stage
 
           sudo chroot workspace/rootfs /bin/bash -eux <<'CHROOT'
           export DEBIAN_FRONTEND=noninteractive
