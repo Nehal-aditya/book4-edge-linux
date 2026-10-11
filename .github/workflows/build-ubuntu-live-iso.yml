@@ -72,6 +72,7 @@ jobs:
           git am ../../../user_config_repo/patches/0001-*.patch
           git am ../../../user_config_repo/patches/0002-*.patch
           git am ../../../user_config_repo/patches/0003-*.patch
+          git am ../../../user_config_repo/patches/0004-*.patch
 
       - name: Build custom kernel and DTB
         run: |
@@ -299,6 +300,9 @@ jobs:
             zram-swap.service \
             book4-pd-charge.service \
             earlyoom.service || true
+
+          chown -R liveuser:liveuser /home/liveuser
+          chmod 700 /home/liveuser
           CHROOT
 
           for p in proc sys dev; do
@@ -346,7 +350,6 @@ jobs:
           EOF
 
           sudo chmod +x "$R/home/liveuser/Desktop/Install-Ubuntu-Book4.desktop"
-          sudo chown -R 1000:1000 "$R/home/liveuser"
 
       - name: Create SquashFS
         run: |
